@@ -6,6 +6,10 @@ A 24/7 personal AI assistant with 1000+ tools via **OAuth** and **sandboxed exec
 
 > 🚀 **Self-host on Vercel** - one command, ~2 minutes. See below.
 
+[Demo Video](https://x.com/sarahfim/status/2022518658048888916)
+[Open Source Launch Video](https://x.com/sarahfim/status/2053989393036145121)
+
+
 ---
 
 ## ⚡ Deploy your own in seconds
