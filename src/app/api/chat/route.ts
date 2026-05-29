@@ -129,11 +129,11 @@ export async function GET(request: Request) {
 
   const streamContext = getStreamContext();
   if (!streamContext) {
-    return new Response("Stream resumption not available", { status: 204 });
+    return new Response("Stream resumption not available", { status: 200 });
   }
   const stream = await streamContext.resumeExistingStream(streamId);
   if (!stream) {
-    return new Response("Stream already completed", { status: 204 });
+    return new Response("Stream already completed", { status: 200 });
   }
 
   return new Response(stream.pipeThrough(new TextEncoderStream()), {
