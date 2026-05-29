@@ -1,8 +1,8 @@
 import { ToolLoopAgent, stepCountIs } from "ai";
 import type { ToolSet, SystemModelMessage } from "ai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { db } from "~/server/clients/db";
 import { createComposioClient } from "~/server/clients/composio";
-import { createGateway } from "ai";
 import { buildSystemPrompt } from "./system-prompt";
 import {
   createCustomTools,
@@ -26,9 +26,9 @@ import {
 import { stripToolResultEchoes } from "./strip-tool-echoes";
 import { clearStreamingMessage } from "~/server/clients/redis";
 import type { ReconstructedMessage } from "./types";
-
+ 
 type MessageSource = "web" | "telegram" | "cron";
-
+ 
 /**
  * Wraps every tool's execute function to sanitize its return value,
  * replacing lone Unicode surrogates with U+FFFD. Composio tool results
@@ -56,43 +56,43 @@ function sanitizeToolResults(tools: ToolSet): ToolSet {
   }
   return wrapped;
 }
-
+ 
 interface PrepareAgentRunParams {
   instanceId: string;
   userMessage: string;
   source: MessageSource;
   userMessageType?: "hidden";
 }
-
+ 
 interface PrepareAgentRunResult {
   agent: ToolLoopAgent;
   messages: ReconstructedMessage[];
 }
-
+ 
 type PrepareResult = { status: "ready"; result: PrepareAgentRunResult };
-
+ 
 export async function prepareAgentRun(
   params: PrepareAgentRunParams,
 ): Promise<PrepareResult> {
   const { instanceId, userMessage, source, userMessageType } = params;
-
+ 
   const instance = await db.composioClawInstance.findUnique({
     where: { id: instanceId },
   });
-
+ 
   if (!instance) {
     throw new Error("Instance not found");
   }
-
+ 
   const user = await db.user.findUnique({
     where: { id: instance.userId },
     select: { timezone: true },
   });
-
+ 
   const userTimezone = user?.timezone ?? "UTC";
-
+ 
   const relevantMemories = await searchMemoriesForContext(instanceId, userMessage);
-
+ 
   const systemPrompt = sanitizeString(
     buildSystemPrompt({
       soulPrompt: instance.soulPrompt,
@@ -103,7 +103,7 @@ export async function prepareAgentRun(
       userTimezone,
     }),
   );
-
+ 
   const dbMessages = await loadContextMessages(
     instanceId,
     instance.lastCompactionAt,
@@ -113,10 +113,10 @@ export async function prepareAgentRun(
     instance.lastCompactionSummary,
     userMessage,
   );
-
+ 
   const contextWindow = getContextWindow(instance.anthropicModel);
   const { messages: prunedMessages } = pruneContext(aiMessages, contextWindow);
-
+ 
   // Add cache breakpoint to last history message (before new user message)
   // so the conversation prefix is cached across turns
   if (prunedMessages.length >= 2) {
@@ -129,7 +129,7 @@ export async function prepareAgentRun(
       },
     };
   }
-
+ 
   await db.message.create({
     data: {
       instanceId,
@@ -139,7 +139,7 @@ export async function prepareAgentRun(
       ...(userMessageType && { messageType: userMessageType }),
     },
   });
-
+ 
   const composio = createComposioClient();
   const session = await composio.create(instance.userId, {
     manageConnections: {
@@ -147,14 +147,14 @@ export async function prepareAgentRun(
     },
   });
   const composioTools = await session.tools();
-
+ 
   const customTools = createCustomTools(instanceId, userTimezone);
-
+ 
   const allTools: ToolSet = sanitizeToolResults({
     ...composioTools,
     ...customTools,
   });
-
+ 
   // Pre-create assistant message row so we can update it in onFinish
   const assistantMessageRow = await db.message.create({
     data: {
@@ -168,13 +168,21 @@ export async function prepareAgentRun(
       cacheWriteTokens: 0,
     },
   });
-
-  const modelString = instance.anthropicModel.startsWith("anthropic/")
-    ? instance.anthropicModel
-    : `anthropic/${instance.anthropicModel}`;
-  const gateway = createGateway({ apiKey: process.env.AI_GATEWAY_API_KEY });
-  const model = gateway(modelString);
-
+ 
+  // Direct Anthropic API call — bypasses Vercel AI Gateway entirely
+  // Uses ANTHROPIC_API_KEY environment variable directly
+  const anthropic = createAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
+ 
+  // Strip the "anthropic/" prefix if present since createAnthropic
+  // expects just the model name e.g. "claude-sonnet-4-5"
+  const modelName = instance.anthropicModel.startsWith("anthropic/")
+    ? instance.anthropicModel.slice("anthropic/".length)
+    : instance.anthropicModel;
+ 
+  const model = anthropic(modelName);
+ 
   const agent = new ToolLoopAgent({
     model,
     instructions: {
@@ -195,17 +203,17 @@ export async function prepareAgentRun(
           totalUsage.inputTokenDetails?.cacheReadTokens ?? 0;
         const cacheWriteTokens =
           totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0;
-
+ 
         // Build assistant content from steps (UIMessage parts format)
         const assistantParts: Array<Record<string, unknown>> = [];
-
+ 
         for (const step of steps) {
           for (let i = 0; i < step.toolCalls.length; i++) {
             const tc = step.toolCalls[i]!;
             const tr = step.toolResults[i];
             const tcInput = toPlainRecordSafe(tc.input);
             const tcResult = tr ? toPlainRecordSafe(tr.output) : null;
-
+ 
             assistantParts.push({
               type: "dynamic-tool" as const,
               toolCallId: tc.toolCallId,
@@ -215,13 +223,13 @@ export async function prepareAgentRun(
               output: tcResult ?? {},
             });
           }
-
+ 
           const stepText = stripToolResultEchoes(step.text);
           if (stepText) {
             assistantParts.push({ type: "text" as const, text: stepText });
           }
         }
-
+ 
         // Update the pre-created assistant message with final content + totals
         await db.message.update({
           where: { id: assistantMessageRow.id },
@@ -233,14 +241,14 @@ export async function prepareAgentRun(
             cacheWriteTokens,
           },
         });
-
+ 
         // Fire-and-forget post-response tasks
         const totalContextTokens = inputTokens + outputTokens;
         const settings: CompactionSettings = {
           contextWindow,
           ...DEFAULT_COMPACTION_SETTINGS,
         };
-
+ 
         void runPostResponseTasks({
           instanceId,
           instance: {
@@ -266,7 +274,7 @@ export async function prepareAgentRun(
       }
     },
   });
-
+ 
   return {
     status: "ready",
     result: {
@@ -275,10 +283,11 @@ export async function prepareAgentRun(
     },
   };
 }
-
+ 
 export type {
   PrepareAgentRunParams,
   PrepareResult,
   PrepareAgentRunResult,
   MessageSource,
 };
+ 
