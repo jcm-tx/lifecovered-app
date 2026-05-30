@@ -115,7 +115,7 @@ async function handleOnboarding(
     .eq('phone_number', phoneNumber)
     .single()
 
-console.log('Session lookup:', { phoneNumber, sessionRaw, sessionError })
+console.error('Session lookup:', { phoneNumber, sessionRaw, sessionError })
  
   const session = sessionRaw as OnboardingSession | null
  
