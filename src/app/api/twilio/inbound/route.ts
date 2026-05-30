@@ -109,11 +109,13 @@ async function handleOnboarding(
   phoneNumber: string,
   body: string
 ): Promise<string> {
-  const { data: sessionRaw } = await supabase
+  const { data: sessionRaw, error: sessionError } = await supabase
     .from('dropzone_onboarding')
     .select('*')
     .eq('phone_number', phoneNumber)
     .single()
+
+console.log('Session lookup:', { phoneNumber, sessionRaw, sessionError })
  
   const session = sessionRaw as OnboardingSession | null
  
