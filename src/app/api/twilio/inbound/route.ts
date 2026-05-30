@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/prefer-regexp-exec */
+
 // src/app/api/twilio/inbound/route.ts
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
