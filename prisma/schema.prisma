@@ -199,6 +199,16 @@ model OnboardingState {
   updatedAt      DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
 
   @@map("onboarding_state")
+
+model DropzoneOnboarding {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique @map("phone_number")
+  step        String   @default("awaiting_name")
+  data        Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("dropzone_onboarding")
 }
