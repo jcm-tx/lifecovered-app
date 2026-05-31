@@ -414,14 +414,3 @@ function parseKids(text: string, familyId: string): Array<{ family_id: string; n
   return kids
 }
  
-  if (kids.length === 0) {
-    kids.push({
-      family_id: familyId,
-      name: text.trim(),
-      age: null,
-    })
-  }
- 
-  return kids
-}
- 
