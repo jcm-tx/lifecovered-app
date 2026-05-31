@@ -202,6 +202,7 @@ console.error('Session lookup:', { phoneNumber, sessionRaw, sessionError })
        lowerBody === 'just me' ||
        lowerBody.includes('not now') ||
        lowerBody.includes('maybe later') ||
+       lowerBody.includes('later') ||
        lowerBody.includes('just me') ||
        lowerBody.includes('no one') ||
        lowerBody.includes('nobody')
@@ -318,7 +319,7 @@ async function callClaude({
  
   return fullText
   .replace(/<event_data>[\s\S]*?<\/event_data>/g, '')
-  .replace(/\*Intent:[\s\S]*?\*/g, '')
+  .replace(/\*?Intent:\s*\w+\*?\n?/g, '')
   .replace(/\*\*(.*?)\*\*/g, '$1')
   .replace(/\*(.*?)\*/g, '$1')
   .trim()
