@@ -307,7 +307,10 @@ async function callClaude({
     await extractAndStoreEvent(fullText, user)
   }
  
-  return fullText.replace(/<event_data>[\s\S]*?<\/event_data>/g, '').trim()
+  return fullText
+  .replace(/<event_data>[\s\S]*?<\/event_data>/g, '')
+  .replace(/\*Intent:[\s\S]*?\*/g, '')
+  .trim()
 }
  
 // ─── Event Extraction ─────────────────────────────────────────────────────────
