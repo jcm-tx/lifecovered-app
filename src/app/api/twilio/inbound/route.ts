@@ -125,7 +125,7 @@ console.error('Session lookup:', { phoneNumber, sessionRaw, sessionError })
       step: 'awaiting_name',
       data: {},
     })
-    return "Hey! Welcome to DropZone 👋 I'm Tony — I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?"
+    return "Hey! Welcome to DropZone 👋 I'm Mary — I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?"
   }
  
   switch (session.step) {
@@ -196,7 +196,16 @@ console.error('Session lookup:', { phoneNumber, sessionRaw, sessionError })
         .eq('phone_number', phoneNumber)
  
       const lowerBody = body.trim().toLowerCase()
-      if (lowerBody === 'no' || lowerBody === 'nope' || lowerBody === 'just me') {
+      if (
+       lowerBody === 'no' ||
+       lowerBody === 'nope' ||
+       lowerBody === 'just me' ||
+       lowerBody.includes('not now') ||
+       lowerBody.includes('maybe later') ||
+       lowerBody.includes('just me') ||
+       lowerBody.includes('no one') ||
+       lowerBody.includes('nobody')
+     ) {
         return "You're all set! Your 7-day free trial starts now — no credit card needed. Just text me anything on the schedule and I'll take it from there."
       }
  
@@ -204,7 +213,7 @@ console.error('Session lookup:', { phoneNumber, sessionRaw, sessionError })
     }
  
     default:
-      return "Hey! Welcome to DropZone 👋 I'm Tony. What's your name?"
+      return "Hey! Welcome to DropZone 👋 I'm Mary. What's your name?"
   }
 }
  
@@ -272,7 +281,7 @@ async function callClaude({
   familyMembers: FamilyMember[]
   children: Child[]
 }): Promise<string> {
-  const systemPrompt = `You are Tony, the warm and reliable coordinator behind DropZone — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request." You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested.`
+  const systemPrompt = `You are Mary, the warm and reliable coordinator behind DropZone — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request." You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested.`
  
   const familyContext = [
     `Family: ${user.families?.name ?? 'Unknown'}`,
