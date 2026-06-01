@@ -38,6 +38,7 @@ interface Event {
   event_date: string
   event_time: string | null
   children: { name: string } | null
+  assigned_user: { name: string } | null
 }
 
 interface FamilyMember {
@@ -311,7 +312,7 @@ async function handleMessageProcessing(
       .limit(5),
     supabase
       .from('events')
-      .select('title, event_date, event_time, children(name)')
+      .select('title, event_date, event_time, children(name), assigned_user:assigned_to(name)')
       .eq('family_id', familyId)
       .gte('event_date', today)
       .lte('event_date', in14Days)
@@ -371,7 +372,7 @@ async function callClaude({
     `Parent: ${user.name}`,
     `Children: ${children.map(c => `${c.name} (${c.age ?? 'age unknown'})`).join(', ') || 'None on file'}`,
     `Family members: ${familyMembers.map(m => `${m.name} (${m.role})`).join(', ') || 'Just you'}`,
-    `Upcoming events: ${upcomingEvents.length > 0 ? upcomingEvents.map(e => `${e.title} on ${e.event_date}${e.event_time ? ' at ' + e.event_time : ''}`).join(', ') : 'None'}`,
+    `Upcoming events: ${upcomingEvents.length > 0 ? upcomingEvents.map(e => `${e.title} on ${e.event_date}${e.event_time ? ' at ' + e.event_time : ''}${e.assigned_user ? ' (assigned to ' + e.assigned_user.name + ')' : ''}`).join(', ') : 'None'}`,
     `Recent messages:\n${recentMessages.map(m => `[${m.direction}] ${m.content}`).join('\n') || 'None'}`,
   ].join('\n')
 
