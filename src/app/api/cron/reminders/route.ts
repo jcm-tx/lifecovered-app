@@ -13,6 +13,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+interface EventRow {
+  id: string
+  title: string
+  event_date: string
+  event_time: string | null
+  family_id: string
+  reminder_sent_2hr: boolean
+  reminder_sent_30min: boolean
+  assigned_to: string | null
+  children: { name: string } | { name: string }[] | null
+  assigned_user: { name: string; phone_number: string } | { name: string; phone_number: string }[] | null
+}
+
+interface FamilyMember {
+  id: string
+  name: string
+  phone_number: string
+  stripe_status: string
+}
+
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -23,8 +43,7 @@ export async function GET(req: NextRequest) {
     const now = new Date()
     const todayISO = now.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })
 
-    // Get all events today that haven't had reminders sent yet
-    const { data: events, error } = await supabase
+    const { data: eventsRaw, error } = await supabase
       .from('events')
       .select(`
         id,
@@ -32,7 +51,6 @@ export async function GET(req: NextRequest) {
         event_date,
         event_time,
         family_id,
-        confirmed,
         reminder_sent_2hr,
         reminder_sent_30min,
         assigned_to,
@@ -47,7 +65,9 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Error fetching events', { status: 500 })
     }
 
-    if (!events || events.length === 0) {
+    const events = (eventsRaw ?? []) as EventRow[]
+
+    if (events.length === 0) {
       return new NextResponse('No events today', { status: 200 })
     }
 
@@ -57,33 +77,33 @@ export async function GET(req: NextRequest) {
       try {
         if (!event.event_time) continue
 
-        // Parse event time into a Date object
-        const [hours, minutes] = (event.event_time as string).split(':').map(Number)
+        const [hoursStr, minutesStr] = event.event_time.split(':')
+        const hours = parseInt(hoursStr ?? '0')
+        const minutes = parseInt(minutesStr ?? '0')
         const eventTime = new Date(now)
-        eventTime.setHours(hours!, minutes!, 0, 0)
+        eventTime.setHours(hours, minutes, 0, 0)
 
         const minutesUntilEvent = (eventTime.getTime() - now.getTime()) / (1000 * 60)
 
-        // Get family members to notify
-        const { data: familyMembers } = await supabase
+        const { data: membersRaw } = await supabase
           .from('users')
           .select('id, name, phone_number, stripe_status')
           .eq('family_id', event.family_id)
           .in('stripe_status', ['trial', 'active'])
 
-        if (!familyMembers || familyMembers.length === 0) continue
+        const familyMembers = (membersRaw ?? []) as FamilyMember[]
+        if (familyMembers.length === 0) continue
 
-        const childName = event.children?.name ?? null
-        const assignedUserRaw = Array.isArray(event.assigned_user) ? event.assigned_user[0] : event.assigned_user
-        const assignedName = assignedUserRaw?.name ?? null
-        const assignedPhone = assignedUserRaw?.phone_number ?? null
+        // Normalize children and assigned_user (Supabase returns array or object)
+        const childRaw = Array.isArray(event.children) ? event.children[0] : event.children
+        const childName = childRaw?.name ?? null
 
-        // 2-hour reminder (between 110-130 minutes out)
-        if (
-          minutesUntilEvent >= 110 &&
-          minutesUntilEvent <= 130 &&
-          !event.reminder_sent_2hr
-        ) {
+        const assignedRaw = Array.isArray(event.assigned_user) ? event.assigned_user[0] : event.assigned_user
+        const assignedName = assignedRaw?.name ?? null
+        const assignedPhone = assignedRaw?.phone_number ?? null
+
+        // 2-hour reminder (110-130 minutes out)
+        if (minutesUntilEvent >= 110 && minutesUntilEvent <= 130 && !event.reminder_sent_2hr) {
           const message = generate2HrReminder({
             title: event.title,
             eventTime: event.event_time,
@@ -91,7 +111,6 @@ export async function GET(req: NextRequest) {
             assignedName,
           })
 
-          // Send to assigned person if set, otherwise all family members
           const recipients = assignedPhone
             ? [assignedPhone]
             : familyMembers.map(m => m.phone_number)
@@ -107,12 +126,8 @@ export async function GET(req: NextRequest) {
             .eq('id', event.id)
         }
 
-        // 30-minute reminder (between 25-35 minutes out)
-        if (
-          minutesUntilEvent >= 25 &&
-          minutesUntilEvent <= 35 &&
-          !event.reminder_sent_30min
-        ) {
+        // 30-minute reminder (25-35 minutes out)
+        if (minutesUntilEvent >= 25 && minutesUntilEvent <= 35 && !event.reminder_sent_30min) {
           const message = generate30MinReminder({
             title: event.title,
             eventTime: event.event_time,
