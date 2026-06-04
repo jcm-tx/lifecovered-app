@@ -77,6 +77,36 @@ export async function POST(req: NextRequest) {
     const familyId = user?.family_id ?? null
     const userId = user?.id ?? null
 
+    // Handle opt-out/opt-in/help keywords before anything else
+    const upperBody = body.trim().toUpperCase()
+
+    if (upperBody === 'STOP' || upperBody === 'STOPALL' || upperBody === 'UNSUBSCRIBE' || upperBody === 'CANCEL' || upperBody === 'END' || upperBody === 'QUIT') {
+      if (user) {
+        await supabase
+          .from('users')
+          .update({ stripe_status: 'cancelled' })
+          .eq('phone_number', phoneNumber)
+      }
+      // Twilio automatically sends the opt-out message — return empty response
+      return twimlResponse('')
+    }
+
+    if (upperBody === 'START' || upperBody === 'YES' || upperBody === 'UNSTOP') {
+      if (user) {
+        // Existing user resubscribing
+        await supabase
+          .from('users')
+          .update({ stripe_status: 'trial' })
+          .eq('phone_number', phoneNumber)
+        return twimlResponse("Welcome back! You're resubscribed to Life. Covered. Just text me anything on your schedule and I'll take it from there.")
+      }
+      // New user — fall through to onboarding below
+    }
+
+    if (upperBody === 'HELP') {
+      return twimlResponse('Life. Covered. — AI family coordination. Text your schedule and Mary handles the rest. Support: support@lifecovered.app. Msg & data rates may apply. Reply STOP to cancel.')
+    }
+
     await supabase.from('messages').insert({
       family_id: familyId,
       user_id: userId,
