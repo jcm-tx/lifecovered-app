@@ -530,13 +530,19 @@ function parseVillageMember(text: string): { name: string; phone: string } | nul
 
 function parseKids(text: string, familyId: string): Array<{ family_id: string; name: string; age: number | null }> {
   const kids: Array<{ family_id: string; name: string; age: number | null }> = []
-  const pattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[\(\s]?(\d+)[\)\s]?/g
+  
+  // Stop parsing at "Also" or "elderly" or "relative" — those aren't kids
+  const kidsSection = text.split(/\bAlso\b|\belderly\b|\brelative\b|\badult\b/i)[0] ?? text
+
+  // Match patterns like:
+  // "John Mark (13)", "Estela 9", "Jack - 14", "Jack: 14", "Jack, 14"
+  const pattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[-:,\(\s]?\s*(\d{1,2})\s*[\),]?/g
   let match
 
-  while ((match = pattern.exec(text)) !== null) {
+  while ((match = pattern.exec(kidsSection)) !== null) {
     const name = match[1]!.trim()
     const age = parseInt(match[2]!)
-    if (name.length > 1) {
+    if (name.length > 1 && age < 18) {
       kids.push({ family_id: familyId, name, age })
     }
   }
