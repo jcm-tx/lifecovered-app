@@ -552,8 +552,6 @@ function parseElderly(text: string, familyId: string): Array<{ family_id: string
 
   // Match patterns like:
   // "Grandpa who is 78", "Aunt Sue - 78", "Grandma (82)", "Grandpa 78"
-  // Look for names followed by age >= 18, or common elderly terms
-  const elderlyTerms = /\b(Grandp[ao]|Grandm[ao]|Nana|Papa|Pops|Aunt\s+\w+|Uncle\s+\w+|Grammy|Gramps)\b/gi
   const elderlyMatches = text.matchAll(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*(?:[-–,:\(]|\s+who\s+is|\s+age|\s+is)?\s*(\d{2,3})\s*[\),]?/g)
 
   for (const match of elderlyMatches) {
@@ -576,6 +574,8 @@ function parseElderly(text: string, familyId: string): Array<{ family_id: string
 
   return elderly
 }
+
+function parseVillageMember(text: string): { name: string; phone: string } | null {
   // Extract phone number — handles formats like 469-826-8927, (469) 826-8927, 4698268927
   const phoneMatch = text.match(/(\+?1?\s?)?(\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4})/)
   if (!phoneMatch) return null
