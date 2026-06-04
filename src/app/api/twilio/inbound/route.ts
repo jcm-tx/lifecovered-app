@@ -270,7 +270,7 @@ async function handleOnboarding(
       // Save village member if one was provided
       if (sessionData.village_raw && sessionData.family_id) {
         const villageText = sessionData.village_raw
-        const parsed = parseVillageMember(villageText)
+        const parsed = await parseVillageMember(villageText)
         if (parsed) {
           await supabase.from('users').insert({
             phone_number: parsed.phone,
@@ -604,23 +604,50 @@ Rules:
   }
 }
 
-function parseVillageMember(text: string): { name: string; phone: string } | null {
-  // Extract phone number — handles formats like 469-826-8927, (469) 826-8927, 4698268927
-  const phoneMatch = text.match(/(\+?1?\s?)?(\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4})/)
-  if (!phoneMatch) return null
-
-  // Clean phone number to E.164 format
-  const rawPhone = phoneMatch[0].replace(/[^\d]/g, '')
-  const phone = rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
-
-  // Extract name — everything before the phone number, cleaned up
-  const nameSection = text.slice(0, text.indexOf(phoneMatch[0])).trim()
-  const name = nameSection
-    .replace(/,\s*$/, '')
-    .replace(/^(his|her|my|the|is|at|call|contact|number)\s+/i, '')
+async function parseVillageMember(text: string): Promise<{ name: string; phone: string } | null> {
+  // Strip common lead-in words first
+  const cleaned = text
+    .replace(/^(yes|yeah|yep|sure|ok|okay)[,.\s]+/i, '')
     .trim()
 
-  if (!name || name.length < 2) return null
+  // Quick check — must contain a phone number to be worth parsing
+  if (!/\d{7,}/.test(cleaned)) return null
 
-  return { name, phone }
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: `Extract the person's name and phone number from this text. Return ONLY valid JSON with no other text.
+
+Text: "${cleaned}"
+
+Return: {"name": "Mia", "phone": "+15125555555"}
+- Format phone as E.164 (+1XXXXXXXXXX for US numbers)
+- If no name found, return null
+- If no phone found, return null
+- Return null if you cannot extract both: null`
+      }],
+    }),
+  })
+
+  const result = await response.json() as { content?: Array<{ text?: string }> }
+  const resultText = result.content?.[0]?.text?.trim() ?? 'null'
+
+  if (resultText === 'null') return null
+
+  try {
+    const parsed = JSON.parse(resultText) as { name: string; phone: string } | null
+    if (!parsed?.name || !parsed?.phone) return null
+    return parsed
+  } catch {
+    return null
+  }
 }
