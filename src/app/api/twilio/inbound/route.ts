@@ -270,16 +270,21 @@ async function handleOnboarding(
       // Save village member if one was provided
       if (sessionData.village_raw && sessionData.family_id) {
         const villageText = sessionData.village_raw
+        console.error('Village raw:', villageText)
         const parsed = await parseVillageMember(villageText)
+        console.error('Village parsed:', JSON.stringify(parsed))
         if (parsed) {
-          await supabase.from('users').insert({
+          const { error: villageError } = await supabase.from('users').insert({
             phone_number: parsed.phone,
             name: parsed.name,
             family_id: sessionData.family_id,
             role: 'village',
             stripe_status: 'village',
           })
+          console.error('Village insert error:', JSON.stringify(villageError))
         }
+      } else {
+        console.error('Village skipped — raw:', sessionData.village_raw, 'family:', sessionData.family_id)
       }
 
       await supabase
