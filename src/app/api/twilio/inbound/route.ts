@@ -446,7 +446,7 @@ ${familyContext}
 
 Incoming message: "${body}"
 
-Classify the intent internally (ADD_EVENT, QUERY, COORDINATE, FORWARD, CONFIRM, OTHER) but do NOT include the intent in your response. Just respond naturally.
+Classify the intent internally (ADD_EVENT, QUERY, COORDINATE, FORWARD, CONFIRM, OTHER, ADD_VILLAGE) but do NOT include the intent in your response. Just respond naturally.
 
 IMPORTANT: If the message contains ANY scheduling information, you MUST return a separate <event_data>...</event_data> block for EACH event mentioned. Use the exact ISO dates provided above. Example for multiple events:
 <event_data>{"title": "Football", "event_date": "${todayISO}", "event_time": "18:00", "child_name": "JM", "notes": null, "recurring": null}</event_data>
@@ -457,7 +457,10 @@ For recurring events, set the "recurring" field to the interval: "weekly", "biwe
 
 If an event is recurring, your response MUST mention that it has been saved for the next 8 weeks and will need to be re-added after that.
 
-The event_data blocks will be stripped before sending to the user so always include one per event.`
+If the message is adding a village member (someone with a name and phone number to coordinate with), return a <village_data> block:
+<village_data>{"name": "Mia", "phone": "5124619644"}</village_data>
+
+All data blocks will be stripped before sending to the user.`
 
   const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -481,8 +484,13 @@ The event_data blocks will be stripped before sending to the user so always incl
     await extractAndStoreEvent(fullText, user)
   }
 
+  if (fullText.includes('<village_data>')) {
+    await extractAndSaveVillageMember(fullText, user)
+  }
+
   return fullText
     .replace(/<event_data>[\s\S]*?<\/event_data>/g, '')
+    .replace(/<village_data>[\s\S]*?<\/village_data>/g, '')
     .replace(/\*Intent:[\s\S]*?\*/g, '')
     .replace(/Intent:\s*\w+\n?/g, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
@@ -566,6 +574,32 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<voi
     }
   } catch (err) {
     console.error('Event extraction error:', err)
+  }
+}
+
+async function extractAndSaveVillageMember(claudeText: string, user: User): Promise<void> {
+  try {
+    const match = claudeText.match(/<village_data>([\s\S]*?)<\/village_data>/)
+    if (!match?.[1]) return
+
+    const data = JSON.parse(match[1]) as { name: string; phone: string }
+    if (!data.name || !data.phone) return
+
+    // Format phone to E.164
+    const rawPhone = data.phone.replace(/[^\d]/g, '')
+    const phone = rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
+
+    if (phone.length < 12) return // Invalid phone
+
+    await supabase.from('users').insert({
+      phone_number: phone,
+      name: data.name,
+      family_id: user.family_id,
+      role: 'village',
+      stripe_status: 'village',
+    })
+  } catch (err) {
+    console.error('Village member extraction error:', err)
   }
 }
 
