@@ -273,6 +273,11 @@ async function handleOnboarding(
         console.error('Village raw:', villageText)
         const members = await parseVillageMember(villageText)
         console.error('Village parsed:', JSON.stringify(members))
+        if (members.length === 0 && /\d/.test(villageText)) {
+          // Had numbers but couldn't parse — likely incomplete phone number
+          // We'll note this but still complete onboarding
+          console.error('Village parse failed — possible incomplete phone number')
+        }
         for (const member of members) {
           const { error: villageError } = await supabase.from('users').insert({
             phone_number: member.phone,
@@ -289,6 +294,15 @@ async function handleOnboarding(
         .from('dropzone_onboarding')
         .delete()
         .eq('phone_number', phoneNumber)
+
+      // Check if village was provided but failed to parse
+      const villageFailed = sessionData.village_raw &&
+        !sessionData.village_declined &&
+        !/\d{10}/.test(sessionData.village_raw.replace(/\D/g, ''))
+
+      if (villageFailed) {
+        return "You're all set! Your 7-day free trial starts now — no credit card needed. One thing — I wasn't able to save your village member's phone number. You can add them later by texting me their name and number anytime. What's the first thing on your schedule?"
+      }
 
       return "You're all set! Your 7-day free trial starts now — no credit card needed. What's the first thing on your schedule? Just text me anything — a pickup, a school event, whatever's coming up."
     }
@@ -404,7 +418,7 @@ async function callClaude({
   familyMembers: FamilyMember[]
   children: Child[]
 }): Promise<string> {
-  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language.`
+  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language. If a user wants to add a village member, ask for their name and a 10-digit phone number — if the number provided is incomplete or invalid, let them know politely and ask them to resend it.`
 
   // Calculate today's date in user's timezone for accurate date handling
   const now = new Date()
