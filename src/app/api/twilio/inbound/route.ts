@@ -609,9 +609,11 @@ Return this exact format:
 {"people": [{"name": "John Mark", "age": 13, "type": "child"}, {"name": "Grandpa", "age": 82, "type": "elderly"}]}
 
 Rules:
-- Use the exact name as given (e.g. "John Mark" not "John")
+- Accept ANY name format: full names, first names only, nicknames, initials like "J.M." or "JM", abbreviations
+- Use the name EXACTLY as given — do not expand or modify it (e.g. "J.M." stays "J.M.", "JM" stays "JM")
+- Ages may be listed separately from names (e.g. "J.M. and Estela 13 and 9" means J.M. is 13 and Estela is 9)
 - If no age given, use null
-- Grandpa/Grandma/Nana/Papa etc are always "elderly"
+- Grandpa/Grandma/Nana/Papa/Aunt/Uncle etc are always "elderly"
 - Anyone under 18 or described as a kid/child is "child"
 - Return empty array if no people found: {"people": []}`
       }],
