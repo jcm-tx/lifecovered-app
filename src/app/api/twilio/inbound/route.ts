@@ -267,24 +267,22 @@ async function handleOnboarding(
           .eq('id', sessionData.user_id)
       }
 
-      // Save village member if one was provided
+      // Save village members if any were provided
       if (sessionData.village_raw && sessionData.family_id) {
         const villageText = sessionData.village_raw
         console.error('Village raw:', villageText)
-        const parsed = await parseVillageMember(villageText)
-        console.error('Village parsed:', JSON.stringify(parsed))
-        if (parsed) {
+        const members = await parseVillageMember(villageText)
+        console.error('Village parsed:', JSON.stringify(members))
+        for (const member of members) {
           const { error: villageError } = await supabase.from('users').insert({
-            phone_number: parsed.phone,
-            name: parsed.name,
+            phone_number: member.phone,
+            name: member.name,
             family_id: sessionData.family_id,
             role: 'village',
             stripe_status: 'village',
           })
-          console.error('Village insert error:', JSON.stringify(villageError))
+          if (villageError) console.error('Village insert error:', JSON.stringify(villageError))
         }
-      } else {
-        console.error('Village skipped — raw:', sessionData.village_raw, 'family:', sessionData.family_id)
       }
 
       await supabase
@@ -609,14 +607,14 @@ Rules:
   }
 }
 
-async function parseVillageMember(text: string): Promise<{ name: string; phone: string } | null> {
+async function parseVillageMember(text: string): Promise<Array<{ name: string; phone: string }>> {
   // Strip common lead-in words first
   const cleaned = text
     .replace(/^(yes|yeah|yep|sure|ok|okay)[,.\s]+/i, '')
     .trim()
 
   // Quick check — must contain a phone number to be worth parsing
-  if (!/\d{7,}/.test(cleaned)) return null
+  if (!/\d{7,}/.test(cleaned)) return []
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -627,32 +625,28 @@ async function parseVillageMember(text: string): Promise<{ name: string; phone: 
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 100,
+      max_tokens: 200,
       messages: [{
         role: 'user',
-        content: `Extract the person's name and phone number from this text. Return ONLY valid JSON with no other text.
+        content: `Extract ALL people and their phone numbers from this text. There may be one or more people. Return ONLY valid JSON with no other text.
 
 Text: "${cleaned}"
 
-Return: {"name": "Mia", "phone": "+15125555555"}
-- Format phone as E.164 (+1XXXXXXXXXX for US numbers)
-- If no name found, return null
-- If no phone found, return null
-- Return null if you cannot extract both: null`
+Return an array: [{"name": "Mia", "phone": "+15124619644"}, {"name": "Matt", "phone": "+15124611922"}]
+- Format each phone as E.164 (+1XXXXXXXXXX for US numbers)
+- Include every person who has a phone number
+- Return empty array if no valid name+phone pairs found: []`
       }],
     }),
   })
 
   const result = await response.json() as { content?: Array<{ text?: string }> }
-  const resultText = result.content?.[0]?.text?.trim() ?? 'null'
-
-  if (resultText === 'null') return null
+  const resultText = result.content?.[0]?.text?.trim() ?? '[]'
 
   try {
-    const parsed = JSON.parse(resultText) as { name: string; phone: string } | null
-    if (!parsed?.name || !parsed?.phone) return null
-    return parsed
+    const parsed = JSON.parse(resultText) as Array<{ name: string; phone: string }>
+    return Array.isArray(parsed) ? parsed.filter(p => p.name && p.phone) : []
   } catch {
-    return null
+    return []
   }
 }
