@@ -93,15 +93,25 @@ export async function POST(req: NextRequest) {
     }
 
     if (upperBody === 'START' || upperBody === 'UNSTOP') {
-      if (user && !activeSession) {
-        // Only resubscribe if not in an onboarding flow
-        await supabase
-          .from('users')
-          .update({ stripe_status: 'trial' })
+      if (user) {
+        // Check if user is in an active onboarding session
+        const { data: existingSession } = await supabase
+          .from('dropzone_onboarding')
+          .select('step')
           .eq('phone_number', phoneNumber)
-        return twimlResponse("Welcome back! You're resubscribed to Life. Covered. Just text me anything on your schedule and I'll take it from there.")
+          .maybeSingle()
+
+        if (!existingSession) {
+          // No active session — this is a resubscribe
+          await supabase
+            .from('users')
+            .update({ stripe_status: 'trial' })
+            .eq('phone_number', phoneNumber)
+          return twimlResponse("Welcome back! You're resubscribed to Life. Covered. Just text me anything on your schedule and I'll take it from there.")
+        }
+        // Has active session — fall through to onboarding handler
       }
-      // Otherwise fall through to onboarding/session handling
+      // New user — fall through to onboarding below
     }
 
     if (upperBody === 'HELP') {
