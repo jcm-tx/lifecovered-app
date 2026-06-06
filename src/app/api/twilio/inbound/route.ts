@@ -92,16 +92,16 @@ export async function POST(req: NextRequest) {
       return twimlResponse('')
     }
 
-    if (upperBody === 'START' || upperBody === 'YES' || upperBody === 'UNSTOP') {
-      if (user) {
-        // Existing user resubscribing
+    if (upperBody === 'START' || upperBody === 'UNSTOP') {
+      if (user && !activeSession) {
+        // Only resubscribe if not in an onboarding flow
         await supabase
           .from('users')
           .update({ stripe_status: 'trial' })
           .eq('phone_number', phoneNumber)
         return twimlResponse("Welcome back! You're resubscribed to Life. Covered. Just text me anything on your schedule and I'll take it from there.")
       }
-      // New user — fall through to onboarding below
+      // Otherwise fall through to onboarding/session handling
     }
 
     if (upperBody === 'HELP') {
