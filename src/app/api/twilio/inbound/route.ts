@@ -122,11 +122,20 @@ export async function POST(req: NextRequest) {
       .eq('phone_number', phoneNumber)
       .maybeSingle()
 
+    // Check for pending age collection session
+    const { data: agePendingSession } = user ? await supabase
+      .from('dropzone_onboarding')
+      .select('*')
+      .eq('phone_number', `age_pending_${user.id}`)
+      .maybeSingle() : { data: null }
+
     const responseText = activeSession
       ? await handleOnboarding(phoneNumber, body, activeSession as OnboardingSession)
-      : user
-        ? await handleMessageProcessing(user, body)
-        : await handleOnboarding(phoneNumber, body, null)
+      : agePendingSession
+        ? await handleAgePending(body, agePendingSession as OnboardingSession)
+        : user
+          ? await handleMessageProcessing(user, body)
+          : await handleOnboarding(phoneNumber, body, null)
 
     await supabase.from('messages').insert({
       family_id: familyId,
@@ -301,9 +310,59 @@ async function handleOnboarding(
       return `You're all set! Your 7-day free trial starts now — no credit card needed.${villageParseFailedMsg} What's the first thing on your schedule? Just text me anything — a pickup, a school event, whatever's coming up.`
     }
 
+    case 'awaiting_child_age': {
+      const sessionData = session.data ?? {}
+      const childName = sessionData.child_name ?? 'your child'
+      const childId = sessionData.child_id ?? ''
+      const ageMatch = body.match(/\d+/)
+      const age = ageMatch ? parseInt(ageMatch[0]) : null
+
+      await supabase
+        .from('dropzone_onboarding')
+        .delete()
+        .eq('phone_number', phoneNumber)
+
+      if (age !== null && childId) {
+        await supabase
+          .from('children')
+          .update({ age })
+          .eq('id', childId)
+        return `Got it — ${childName} is ${age}. All set!`
+      }
+
+      return `No worries — you can always update ${childName}'s age later if needed.`
+    }
+
     default:
       return "Hey! Welcome to Covered 👋 I'm Mary. What's your name?"
   }
+}
+
+// ─── Age Pending Handler ──────────────────────────────────────────────────────
+
+async function handleAgePending(body: string, session: OnboardingSession): Promise<string> {
+  const sessionData = session.data ?? {}
+  const childName = sessionData.child_name ?? 'your child'
+  const childId = sessionData.child_id ?? ''
+
+  // Delete the pending session regardless
+  await supabase
+    .from('dropzone_onboarding')
+    .delete()
+    .eq('phone_number', session.phone_number)
+
+  const ageMatch = body.match(/\d+/)
+  const age = ageMatch ? parseInt(ageMatch[0]) : null
+
+  if (age !== null && childId) {
+    await supabase
+      .from('children')
+      .update({ age })
+      .eq('id', childId)
+    return `Got it — ${childName} is ${age}. All set!`
+  }
+
+  return `No worries — you can always tell me ${childName}'s age later and I'll get the profile updated.`
 }
 
 // ─── Timezone Resolution ──────────────────────────────────────────────────────
@@ -481,7 +540,52 @@ All data blocks will be stripped before sending to the user.`
   const fullText = result.content?.[0]?.text ?? "Got it — I'll take care of that."
 
   if (fullText.includes('<event_data>')) {
-    await extractAndStoreEvent(fullText, user)
+    const newChildren = await extractAndStoreEvent(fullText, user)
+    if (newChildren.length > 0) {
+      const firstName = newChildren[0]!
+
+      // Look up the newly created child record
+      const { data: newChildRaw } = await supabase
+        .from('children')
+        .select('id')
+        .eq('family_id', user.family_id)
+        .ilike('name', `%${firstName}%`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+      const newChild = newChildRaw as { id: string } | null
+
+      // Create a pending session to capture the age response
+      if (newChild?.id) {
+        await supabase.from('dropzone_onboarding').insert({
+          phone_number: `age_pending_${user.id}`,
+          step: 'awaiting_child_age',
+          data: {
+            child_name: firstName,
+            child_id: newChild.id,
+            user_phone: user.id,
+          },
+        })
+      }
+
+      const names = newChildren.join(' and ')
+      const agePrompt = newChildren.length === 1
+        ? ` Quick one — how old is ${names}? I want to make sure I have their profile complete.`
+        : ` Quick one — how old are ${names}? I want to make sure I have their profiles complete.`
+
+      const stripped = fullText
+        .replace(/<[a-z_]+>[\s\S]*?<\/[a-z_]+>/g, '')
+        .replace(/<[a-z_]+>/g, '')
+        .replace(/<\/[a-z_]+>/g, '')
+        .replace(/\*Intent:[\s\S]*?\*/g, '')
+        .replace(/Intent:\s*\w+\n?/g, '')
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1')
+        .replace(/^#{1,3}\s+/gm, '')
+        .replace(/^\d+\.\s+/gm, '')
+        .trim()
+      return stripped + agePrompt
+    }
   }
 
   if (fullText.includes('<village_data>')) {
@@ -503,10 +607,12 @@ All data blocks will be stripped before sending to the user.`
 
 // ─── Event Extraction ─────────────────────────────────────────────────────────
 
-async function extractAndStoreEvent(claudeText: string, user: User): Promise<void> {
+async function extractAndStoreEvent(claudeText: string, user: User): Promise<string[]> {
+  const newChildren: string[] = []
+
   try {
     const matches = [...claudeText.matchAll(/<event_data>([\s\S]*?)<\/event_data>/g)]
-    if (matches.length === 0) return
+    if (matches.length === 0) return newChildren
 
     for (const match of matches) {
       if (!match[1]) continue
@@ -539,7 +645,6 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<voi
           const child = childRaw as { id: string } | null
           childId = child?.id ?? null
 
-          // If child not found, create them automatically
           if (!childId) {
             const isElderly = /grandp|grandm|nana|papa|pops|grammy|gramps|aunt|uncle/i.test(child_name)
             const { data: newChildRaw } = await supabase
@@ -554,10 +659,13 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<voi
               .single()
             const newChild = newChildRaw as { id: string } | null
             childId = newChild?.id ?? null
+
+            if (!isElderly) {
+              newChildren.push(child_name)
+            }
           }
         }
 
-        // Generate dates — 1 for one-time, 8 for recurring
         const dates = generateEventDates(event_date, recurring)
 
         for (const date of dates) {
@@ -578,6 +686,8 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<voi
   } catch (err) {
     console.error('Event extraction error:', err)
   }
+
+  return newChildren
 }
 
 async function extractAndSaveVillageMember(claudeText: string, user: User): Promise<void> {
@@ -673,9 +783,13 @@ Return this exact format:
 Rules:
 - Accept ANY name format: full names, first names only, nicknames, initials like "J.M." or "JM", abbreviations
 - Use the name EXACTLY as given — do not expand or modify it (e.g. "J.M." stays "J.M.", "JM" stays "JM")
-- Ages may be listed separately from names (e.g. "J.M. and Estela 13 and 9" means J.M. is 13 and Estela is 9)
-- If no age given, use null
-- Grandpa/Grandma/Nana/Papa/Aunt/Uncle etc are always "elderly"
+- Ages may be listed separately from names — pair them in order. Examples:
+  * "J.M. and Estela, ages 13 and 9" → J.M. is 13, Estela is 9
+  * "J.M. and Estela 13 and 9" → J.M. is 13, Estela is 9
+  * "Sarah 12 and Jake 8" → Sarah is 12, Jake is 8
+  * "2 kids: Sarah and Jake, 12 and 8" → Sarah is 12, Jake is 8
+- If no age given for a person, use null — do NOT assign someone else's age
+- Grandpa/Grandma/Nana/Papa/Aunt/Uncle/Gramps/Grammy etc are always "elderly"
 - Anyone under 18 or described as a kid/child is "child"
 - Return empty array if no people found: {"people": []}`
       }],
