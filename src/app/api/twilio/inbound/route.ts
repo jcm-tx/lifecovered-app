@@ -664,7 +664,7 @@ async function callClaude({
   familyMembers: FamilyMember[]
   children: Child[]
 }): Promise<string> {
-  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language. If a user wants to add a village member, ask for their name and a 10-digit phone number — if the number provided is incomplete or invalid, let them know politely and ask them to resend it. If recent messages include a CONFLICT notice, mention it naturally in your response — e.g. "Heads up — looks like that overlaps with something else on the schedule."`
+  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language. If a user wants to add a village member, ask for their name and a 10-digit phone number — if the number provided is incomplete or invalid, let them know politely and ask them to resend it. CONFLICTS: If recent messages include a CONFLICT notice, you MUST mention it clearly and directly in your response — e.g. "Heads up — that overlaps with [other event] for [child name]. You may want to sort that out." Do not bury or skip conflict notices. CALENDAR: If the user asks for their calendar link, sync link, iCal, or how to add their schedule to their phone/calendar, return a <send_ical/> tag in your response and tell them you're sending their calendar link.`
 
   // Calculate today's date in user's timezone for accurate date handling
   const now = new Date()
@@ -792,8 +792,25 @@ All data blocks will be stripped before sending to the user.`
     await handleCoordinationRequest(fullText, user)
   }
 
+  if (fullText.includes('<send_ical/>') || fullText.includes('<send_ical />')) {
+    const icalMsg = await getIcalMessage(user)
+    const stripped = fullText
+      .replace(/<[a-z_/\s]+>/g, '')
+      .replace(/<\/[a-z_]+>/g, '')
+      .replace(/\*Intent:[\s\S]*?\*/g, '')
+      .replace(/Intent:\s*\w+\n?/g, '')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/^#{1,3}\s+/gm, '')
+      .replace(/^\d+\.\s+/gm, '')
+      .trim()
+    return stripped + '\n\n' + icalMsg
+  }
+
   return fullText
     .replace(/<[a-z_]+>[\s\S]*?<\/[a-z_]+>/g, '')
+    .replace(/<[a-z_]+\/>/g, '')
+    .replace(/<[a-z_]+\s*\/>/g, '')
     .replace(/<[a-z_]+>/g, '')
     .replace(/<\/[a-z_]+>/g, '')
     .replace(/\*Intent:[\s\S]*?\*/g, '')
@@ -966,6 +983,22 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
     )
   } catch (err) {
     console.error('Village member extraction error:', err)
+  }
+}
+
+async function getIcalMessage(user: User): Promise<string> {
+  try {
+    const { data: familyRaw } = await supabase
+      .from('families')
+      .select('calendar_token')
+      .eq('id', user.family_id)
+      .single()
+    const family = familyRaw as { calendar_token: string } | null
+    if (!family?.calendar_token) return "I don't have a calendar link set up for your account yet. Contact support@lifecovered.app and we'll get that sorted."
+    const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${family.calendar_token}/feed.ics`
+    return `Here's your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${icalUrl}`
+  } catch {
+    return "I had trouble finding your calendar link. Text us at support@lifecovered.app and we'll sort it out."
   }
 }
 
