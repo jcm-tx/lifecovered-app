@@ -2,7 +2,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/prefer-regexp-exec */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // src/app/api/twilio/inbound/route.ts
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
@@ -153,13 +152,22 @@ export async function POST(req: NextRequest) {
       .eq('phone_number', `age_pending_${user.id}`)
       .maybeSingle() : { data: null }
 
+    // Check for pending coordination reply
+    const { data: coordPendingSession } = await supabase
+      .from('dropzone_onboarding')
+      .select('*')
+      .eq('phone_number', `coord_pending_${phoneNumber}`)
+      .maybeSingle()
+
     const responseText = activeSession
       ? await handleOnboarding(phoneNumber, body, activeSession as OnboardingSession)
-      : agePendingSession
-        ? await handleAgePending(body, agePendingSession as OnboardingSession)
-        : user
-          ? await handleMessageProcessing(user, body)
-          : await handleOnboarding(phoneNumber, body, null)
+      : coordPendingSession
+        ? await handleCoordinationReply(body, coordPendingSession as OnboardingSession)
+        : agePendingSession
+          ? await handleAgePending(body, agePendingSession as OnboardingSession)
+          : user
+            ? await handleMessageProcessing(user, body)
+            : await handleOnboarding(phoneNumber, body, null)
 
     await supabase.from('messages').insert({
       family_id: familyId,
@@ -210,7 +218,11 @@ async function handleOnboarding(
 
       const { data: familyRaw } = await supabase
         .from('families')
-        .insert({ name: `The ${firstName} Family`, tier: 'solo' })
+        .insert({ 
+          name: `The ${firstName} Family`, 
+          tier: 'solo',
+          calendar_token: generateToken(),
+        })
         .select()
         .single()
 
@@ -315,6 +327,26 @@ async function handleOnboarding(
         }
 
         for (const member of members) {
+          // Check tier limits before adding
+          const { count: memberCount } = await supabase
+            .from('users')
+            .select('*', { count: 'exact', head: true })
+            .eq('family_id', sessionData.family_id)
+
+          const { data: familyRaw } = await supabase
+            .from('families')
+            .select('tier')
+            .eq('id', sessionData.family_id)
+            .single()
+          const familyTier = (familyRaw as { tier: string } | null)?.tier ?? 'solo'
+          const tierLimits: Record<string, number> = { solo: 1, family: 4, village: 8 }
+          const limit = tierLimits[familyTier] ?? 1
+
+          if ((memberCount ?? 0) >= limit) {
+            villageParseFailedMsg = ` One thing — you've reached the member limit for your current plan. To add more village members, you'll need to upgrade your plan at lifecovered.app.`
+            break
+          }
+
           const { error: villageError } = await supabase.from('users').insert({
             phone_number: member.phone,
             name: member.name,
@@ -337,10 +369,47 @@ async function handleOnboarding(
 
       await supabase
         .from('dropzone_onboarding')
+        .update({
+          step: 'awaiting_ical',
+          data: { ...sessionData },
+        })
+        .eq('phone_number', phoneNumber)
+
+      const villageMsg = villageParseFailedMsg ? villageParseFailedMsg + ' ' : ''
+      return `${villageMsg}Almost there! Want me to sync your schedule to Apple Calendar or Google Calendar automatically? Just say yes or no.`
+    }
+
+    case 'awaiting_ical': {
+      const sessionData = session.data ?? {}
+      const lowerBody = body.trim().toLowerCase()
+      const wantsICal =
+        lowerBody === 'yes' ||
+        lowerBody === 'yeah' ||
+        lowerBody === 'yep' ||
+        lowerBody === 'sure' ||
+        lowerBody === 'ok' ||
+        lowerBody === 'okay' ||
+        lowerBody.includes('yes')
+
+      await supabase
+        .from('dropzone_onboarding')
         .delete()
         .eq('phone_number', phoneNumber)
 
-      return `You're all set! Your 7-day free trial starts now — no credit card needed.${villageParseFailedMsg} What's the first thing on your schedule? Just text me anything — a pickup, a school event, whatever's coming up.`
+      if (wantsICal && sessionData.family_id) {
+        const { data: familyRaw } = await supabase
+          .from('families')
+          .select('calendar_token')
+          .eq('id', sessionData.family_id)
+          .single()
+        const family = familyRaw as { calendar_token: string } | null
+        if (family?.calendar_token) {
+          const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${family.calendar_token}/feed.ics`
+          return `Here's your calendar link — add it to Apple Calendar or Google Calendar and every event I save will appear automatically:\n\n${icalUrl}\n\nWhat's the first thing on your schedule?`
+        }
+      }
+
+      return "No problem! What's the first thing on your schedule? Just text me anything — a pickup, a school event, whatever's coming up."
     }
 
     case 'awaiting_child_age': {
@@ -396,6 +465,86 @@ async function handleAgePending(body: string, session: OnboardingSession): Promi
   }
 
   return `No worries — you can always tell me ${childName}'s age later and I'll get the profile updated.`
+}
+
+// ─── Co-parent Coordination Handler ──────────────────────────────────────────
+
+async function handleCoordinationReply(body: string, session: OnboardingSession): Promise<string> {
+  const sessionData = session.data ?? {}
+  const lowerBody = body.trim().toLowerCase()
+  const parentPhone = sessionData.parent_phone ?? ''
+  const parentName = sessionData.parent_name ?? 'Someone'
+  const eventTitle = sessionData.event_title ?? 'the event'
+  const eventDate = sessionData.event_date ?? ''
+  const eventTime = sessionData.event_time ?? ''
+  const childName = sessionData.child_name ?? ''
+  const eventId = sessionData.event_id ?? ''
+
+  await supabase
+    .from('dropzone_onboarding')
+    .delete()
+    .eq('phone_number', session.phone_number)
+
+  const confirmed =
+    lowerBody === 'yes' ||
+    lowerBody === 'yeah' ||
+    lowerBody === 'yep' ||
+    lowerBody === 'sure' ||
+    lowerBody === 'ok' ||
+    lowerBody === 'okay' ||
+    lowerBody.includes('yes') ||
+    lowerBody.includes('can do') ||
+    lowerBody.includes('i got') ||
+    lowerBody.includes('got it')
+
+  if (confirmed) {
+    // Update event assigned_to
+    if (eventId) {
+      const { data: villageUserRaw } = await supabase
+        .from('users')
+        .select('id')
+        .eq('phone_number', session.phone_number.replace('coord_pending_', ''))
+        .single()
+      const villageUser = villageUserRaw as { id: string } | null
+      if (villageUser?.id) {
+        await supabase
+          .from('events')
+          .update({ assigned_to: villageUser.id, confirmed: true })
+          .eq('id', eventId)
+      }
+    }
+
+    // Notify parent
+    if (parentPhone) {
+      await sendSMS(
+        parentPhone,
+        `${sessionData.village_name ?? 'Your village member'} confirmed they'll cover ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}${eventTime ? ' at ' + eventTime : ''}. You're covered! 👍`
+      )
+    }
+
+    return `Perfect — you're confirmed for ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}${eventTime ? ' at ' + eventTime : ''}. I'll remind you 2 hours before. 👍`
+  } else {
+    // Notify parent of decline
+    if (parentPhone) {
+      await sendSMS(
+        parentPhone,
+        `${sessionData.village_name ?? 'Your village member'} can't cover ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}. You may want to arrange alternative coverage.`
+      )
+    }
+
+    return `No worries — I've let ${parentName} know. Thanks for getting back to me!`
+  }
+}
+
+// ─── Token Generator ──────────────────────────────────────────────────────────
+
+function generateToken(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  let token = ''
+  for (let i = 0; i < 24; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return token
 }
 
 // ─── Timezone Resolution ──────────────────────────────────────────────────────
@@ -552,6 +701,9 @@ If an event is recurring, your response MUST mention that it has been saved for 
 If the message is adding a village member (someone with a name and phone number to coordinate with), return a <village_data> block:
 <village_data>{"name": "Mia", "phone": "5124619644"}</village_data>
 
+If the message asks someone to cover/handle/pick up/coordinate something involving a specific village member by name, return a <coordinate_data> block:
+<coordinate_data>{"village_member_name": "Mia", "event_title": "Soccer pickup", "event_date": "${todayISO}", "event_time": "16:00", "child_name": "Estela"}</coordinate_data>
+
 All data blocks will be stripped before sending to the user.`
 
   const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -623,6 +775,10 @@ All data blocks will be stripped before sending to the user.`
 
   if (fullText.includes('<village_data>')) {
     await extractAndSaveVillageMember(fullText, user)
+  }
+
+  if (fullText.includes('<coordinate_data>')) {
+    await handleCoordinationRequest(fullText, user)
   }
 
   return fullText
@@ -761,6 +917,29 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
 
     if (phone.length < 12) return
 
+    // Check tier limits
+    const { count: memberCount } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true })
+      .eq('family_id', user.family_id)
+
+    const { data: familyRaw } = await supabase
+      .from('families')
+      .select('tier')
+      .eq('id', user.family_id)
+      .single()
+    const familyTier = (familyRaw as { tier: string } | null)?.tier ?? 'solo'
+    const tierLimits: Record<string, number> = { solo: 1, family: 4, village: 8 }
+    const limit = tierLimits[familyTier] ?? 1
+
+    if ((memberCount ?? 0) >= limit) {
+      await sendSMS(
+        user.id,
+        `You've reached the member limit for your ${familyTier} plan. To add more village members, upgrade your plan at lifecovered.app.`
+      )
+      return
+    }
+
     await supabase.from('users').insert({
       phone_number: phone,
       name: data.name,
@@ -776,6 +955,68 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
     )
   } catch (err) {
     console.error('Village member extraction error:', err)
+  }
+}
+
+async function handleCoordinationRequest(claudeText: string, user: User): Promise<void> {
+  try {
+    const match = claudeText.match(/<coordinate_data>([\s\S]*?)<\/coordinate_data>/)
+    if (!match?.[1]) return
+
+    const data = JSON.parse(match[1]) as {
+      village_member_name: string
+      event_title: string
+      event_date: string
+      event_time: string | null
+      child_name: string | null
+    }
+
+    // Find the village member by name
+    const { data: villageRaw } = await supabase
+      .from('users')
+      .select('id, name, phone_number')
+      .eq('family_id', user.family_id)
+      .ilike('name', `%${data.village_member_name}%`)
+      .single()
+
+    const villager = villageRaw as { id: string; name: string; phone_number: string } | null
+    if (!villager?.phone_number) return
+
+    // Find the event to get its ID
+    const { data: eventRaw } = await supabase
+      .from('events')
+      .select('id')
+      .eq('family_id', user.family_id)
+      .eq('event_date', data.event_date)
+      .ilike('title', `%${data.event_title}%`)
+      .single()
+    const event = eventRaw as { id: string } | null
+
+    // Create coordination pending session
+    await supabase.from('dropzone_onboarding').insert({
+      phone_number: `coord_pending_${villager.phone_number}`,
+      step: 'awaiting_coordination_reply',
+      data: {
+        parent_phone: user.id,
+        parent_name: user.name,
+        village_name: villager.name,
+        event_title: data.event_title,
+        event_date: data.event_date ?? '',
+        event_time: data.event_time ?? '',
+        child_name: data.child_name ?? '',
+        event_id: event?.id ?? '',
+      },
+    })
+
+    // Text the village member
+    const timeStr = data.event_time ? ` at ${data.event_time}` : ''
+    const childStr = data.child_name ? ` for ${data.child_name}` : ''
+    await sendSMS(
+      villager.phone_number,
+      `Hey ${villager.name}! ${user.name} is asking if you can cover ${data.event_title}${childStr} on ${data.event_date}${timeStr}. Can you make it? Reply YES or NO.`
+    )
+  } catch (err) {
+    console.error('Coordination request error:', err)
   }
 }
 
