@@ -49,6 +49,18 @@ export async function GET(req: NextRequest) {
 
         if (!members || members.length === 0) continue
 
+        // Check if it's 7am in this family's timezone
+        const familyTimezone = members[0]!.timezone ?? 'America/Chicago'
+        const currentHour = parseInt(
+          new Date().toLocaleString('en-US', {
+            timeZone: familyTimezone,
+            hour: 'numeric',
+            hour12: false,
+          })
+        )
+
+        if (currentHour !== 7) continue // Only send at 7am in their timezone
+
         const { data: todayEvents } = await supabase
           .from('events')
           .select('title, event_date, event_time, children(name), assigned_user:assigned_to(name)')
