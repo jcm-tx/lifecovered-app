@@ -42,11 +42,23 @@ export async function GET(req: NextRequest) {
       try {
         const { data: members } = await supabase
           .from('users')
-          .select('id, name, phone_number, stripe_status')
+          .select('id, name, phone_number, stripe_status, timezone')
           .eq('family_id', family.id)
           .in('stripe_status', ['trial', 'active'])
 
         if (!members || members.length === 0) continue
+
+        // Check if it's 6pm in this family's timezone
+        const familyTimezone = members[0]!.timezone ?? 'America/Chicago'
+        const currentHour = parseInt(
+          new Date().toLocaleString('en-US', {
+            timeZone: familyTimezone,
+            hour: 'numeric',
+            hour12: false,
+          })
+        )
+
+        if (currentHour !== 18) continue // Only send at 6pm in their timezone
 
         // Get last week's events
         const { data: pastEvents } = await supabase
