@@ -107,6 +107,29 @@ export async function POST(req: NextRequest) {
       return twimlResponse('Life. Covered. — AI family coordination. Text your schedule and Mary handles the rest. Support: support@lifecovered.app. Msg & data rates may apply. Reply STOP to cancel.')
     }
 
+    // Quiet hours — no responses 10pm to 7am in user's timezone
+    if (user) {
+      const userTimezone = (user as any).timezone ?? 'America/Chicago'
+      const currentHour = parseInt(
+        new Date().toLocaleString('en-US', {
+          timeZone: userTimezone,
+          hour: 'numeric',
+          hour12: false,
+        })
+      )
+      if (currentHour >= 22 || currentHour < 7) {
+        // Log the message but don't respond
+        await supabase.from('messages').insert({
+          family_id: user.family_id,
+          user_id: user.id,
+          direction: 'inbound',
+          channel,
+          content: body,
+        })
+        return twimlResponse("It's late — I'll take care of this first thing in the morning! 🌙")
+      }
+    }
+
     await supabase.from('messages').insert({
       family_id: familyId,
       user_id: userId,
@@ -299,6 +322,15 @@ async function handleOnboarding(
             stripe_status: 'village',
           })
           if (villageError) console.error('Village insert error:', JSON.stringify(villageError))
+
+          // Send welcome text to village member
+          if (!villageError) {
+            const parentName = sessionData.name ?? 'Someone'
+            await sendSMS(
+              member.phone,
+              `Hey ${member.name}! ${parentName} added you to their Life. Covered. village. I'm Mary, an AI coordinator — I'll reach out when I need your help coordinating pickups or schedules. Reply STOP anytime to opt out.`
+            )
+          }
         }
       }
 
@@ -471,7 +503,7 @@ async function callClaude({
   familyMembers: FamilyMember[]
   children: Child[]
 }): Promise<string> {
-  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language. If a user wants to add a village member, ask for their name and a 10-digit phone number — if the number provided is incomplete or invalid, let them know politely and ask them to resend it.`
+  const systemPrompt = `You are Mary, the warm and reliable coordinator behind Covered — a family logistics service. You have a perfect memory of every family you work with. You are specific, never generic. You always reference the actual names, dates, and details from the family context provided. You are conversational and human — never robotic, never use bullet points in messages, never say "I have logged your request", never use markdown formatting, asterisks, or bold text. You speak the way a brilliant, organized friend would speak over text. Keep responses concise — this is a text message, not an email. Maximum 3 sentences unless a summary is explicitly requested. Do not include intent classifications in your response. IMPORTANT: Reminders are automatic — when an event is saved, reminders fire automatically 2 hours before and 30 minutes before. Never ask the user when they want a reminder or for which event. Just confirm the event is saved and tell them reminders will go out automatically. Never ask clarifying questions about reminders. The family context may include elderly dependents — treat them with the same care as children but use age-appropriate language (appointments, rides, medications) rather than school/activity language. If a user wants to add a village member, ask for their name and a 10-digit phone number — if the number provided is incomplete or invalid, let them know politely and ask them to resend it. If recent messages include a CONFLICT notice, mention it naturally in your response — e.g. "Heads up — looks like that overlaps with something else on the schedule."`
 
   // Calculate today's date in user's timezone for accurate date handling
   const now = new Date()
@@ -678,6 +710,31 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
             notes: notes ?? null,
             confirmed: false,
           })
+
+          // Check for conflicts on this date/time
+          if (event_time && childId) {
+            const { data: conflicts } = await supabase
+              .from('events')
+              .select('title, event_time')
+              .eq('family_id', user.family_id)
+              .eq('child_id', childId)
+              .eq('event_date', date)
+              .neq('event_time', event_time)
+              .not('event_time', 'is', null)
+
+            if (conflicts && conflicts.length > 0) {
+              const conflictTitles = conflicts.map((c: any) => `${c.title} at ${c.event_time}`).join(', ')
+              console.error(`Conflict detected for child ${childId} on ${date}: ${title} conflicts with ${conflictTitles}`)
+              // Store conflict for response — will be picked up by callClaude
+              await supabase.from('messages').insert({
+                family_id: user.family_id,
+                user_id: null,
+                direction: 'system',
+                channel: 'internal',
+                content: `CONFLICT: ${child_name ?? 'Unknown'} has ${title} at ${event_time} but also ${conflictTitles} on ${date}`,
+              })
+            }
+          }
         }
       } catch (innerErr) {
         console.error('Error parsing individual event_data block:', innerErr)
@@ -698,11 +755,10 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
     const data = JSON.parse(match[1]) as { name: string; phone: string }
     if (!data.name || !data.phone) return
 
-    // Format phone to E.164
     const rawPhone = data.phone.replace(/[^\d]/g, '')
     const phone = rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
 
-    if (phone.length < 12) return // Invalid phone
+    if (phone.length < 12) return
 
     await supabase.from('users').insert({
       phone_number: phone,
@@ -711,6 +767,12 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
       role: 'village',
       stripe_status: 'village',
     })
+
+    // Send welcome text to village member
+    await sendSMS(
+      phone,
+      `Hey ${data.name}! ${user.name} added you to their Life. Covered. village. I'm Mary, an AI coordinator — I'll reach out when I need your help coordinating pickups or schedules. Reply STOP anytime to opt out.`
+    )
   } catch (err) {
     console.error('Village member extraction error:', err)
   }
@@ -854,5 +916,33 @@ Return an array: [{"name": "Mia", "phone": "+15124619644"}, {"name": "Matt", "ph
     return Array.isArray(parsed) ? parsed.filter(p => p.name && p.phone) : []
   } catch {
     return []
+  }
+}
+// ─── SMS Helper ───────────────────────────────────────────────────────────────
+
+async function sendSMS(to: string, message: string): Promise<void> {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID
+  const authToken = process.env.TWILIO_AUTH_TOKEN
+  const from = process.env.TWILIO_PHONE_NUMBER
+
+  if (!accountSid || !authToken || !from) {
+    console.error('Twilio SMS credentials missing')
+    return
+  }
+
+  const response = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ To: to, From: from, Body: message }),
+    }
+  )
+
+  if (!response.ok) {
+    console.error('Twilio SMS failed:', await response.text())
   }
 }
