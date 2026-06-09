@@ -19,6 +19,7 @@ interface User {
   name: string
   role: string
   stripe_status: string
+  stripe_customer_id: string | null
   families: { name: string } | null
 }
 
@@ -740,6 +741,12 @@ If the message is adding a village member (someone with a name and phone number 
 If the message asks someone to cover/handle/pick up/coordinate something involving a specific village member by name, return a <coordinate_data> block:
 <coordinate_data>{"village_member_name": "Mia", "event_title": "Soccer pickup", "event_date": "${todayISO}", "event_time": "16:00", "child_name": "Estela"}</coordinate_data>
 
+If the message asks to cancel, remove, or delete an event or recurring events, return a <cancel_event> block:
+<cancel_event>{"title": "Dentist", "child_name": "Jake", "cancel_all": true}</cancel_event>
+- Set "cancel_all" to true if cancelling all occurrences (recurring), false if cancelling a specific date
+- If cancelling a specific date, add "event_date": "YYYY-MM-DD"
+- Your response should confirm what was cancelled
+
 All data blocks will be stripped before sending to the user.`
 
   const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -815,6 +822,10 @@ All data blocks will be stripped before sending to the user.`
 
   if (fullText.includes('<coordinate_data>')) {
     await handleCoordinationRequest(fullText, user)
+  }
+
+  if (fullText.includes('<cancel_event>')) {
+    await handleEventCancellation(fullText, user)
   }
 
   if (fullText.includes('<send_ical/>') || fullText.includes('<send_ical />')) {
@@ -1024,6 +1035,51 @@ async function getIcalMessage(user: User): Promise<string> {
     return `Here's your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${icalUrl}`
   } catch {
     return "I had trouble finding your calendar link. Text us at support@lifecovered.app and we'll sort it out."
+  }
+}
+
+async function handleEventCancellation(claudeText: string, user: User): Promise<void> {
+  try {
+    const match = claudeText.match(/<cancel_event>([\s\S]*?)<\/cancel_event>/)
+    if (!match?.[1]) return
+
+    const data = JSON.parse(match[1]) as {
+      title: string
+      child_name: string | null
+      cancel_all: boolean
+      event_date: string | null
+    }
+
+    // Find child ID if child name provided
+    let childId: string | null = null
+    if (data.child_name) {
+      const { data: childRaw } = await supabase
+        .from('children')
+        .select('id')
+        .eq('family_id', user.family_id)
+        .ilike('name', `%${data.child_name}%`)
+        .single()
+      const child = childRaw as { id: string } | null
+      childId = child?.id ?? null
+    }
+
+    // Build delete query
+    let query = supabase
+      .from('events')
+      .delete()
+      .eq('family_id', user.family_id)
+      .ilike('title', `%${data.title}%`)
+
+    if (childId) query = query.eq('child_id', childId)
+    if (!data.cancel_all && data.event_date) query = query.eq('event_date', data.event_date)
+
+    const { error } = await query
+
+    if (error) {
+      console.error('Event cancellation error:', error)
+    }
+  } catch (err) {
+    console.error('handleEventCancellation error:', err)
   }
 }
 
