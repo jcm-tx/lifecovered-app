@@ -19,7 +19,10 @@ export default function PortalSchedulePage() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const router = useRouter()
 
-  useEffect(() => { void loadEvents() }, [])
+  useEffect(() => {
+    void loadEvents()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadEvents() {
     const res = await fetch('/api/portal/events')
@@ -61,11 +64,13 @@ export default function PortalSchedulePage() {
   // Group events by date
   const grouped: Record<string, Event[]> = {}
   for (const event of events) {
-    if (!grouped[event.event_date]) grouped[event.event_date] = []
+    grouped[event.event_date] ??= []
     grouped[event.event_date]!.push(event)
   }
 
-  if (loading) return <div style={styles.loading}>Loading schedule...</div>
+  if (loading) {
+    return <div style={styles.loading}>Loading schedule...</div>
+  }
 
   return (
     <div style={styles.page}>
