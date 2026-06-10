@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/prefer-regexp-exec */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 // src/app/api/twilio/inbound/route.ts
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
@@ -179,7 +180,6 @@ export async function POST(req: NextRequest) {
     // School calendar import — detect intent or PDF URL
     const importIntent = /import|school calendar|school schedule|upload calendar|add calendar/i.test(body)
     const pdfUrlMatch = /https?:\/\/[^\s]+\.pdf/i.exec(body)
-    const genericUrlMatch = /https?:\/\/[^\s]+/i.exec(body)
 
     if (user && pdfUrlMatch) {
       // Parent texted a direct PDF link
@@ -727,7 +727,7 @@ async function parsePdfWithClaude(base64Pdf: string): Promise<string> {
   return result.content?.[0]?.text ?? ''
 }
 
-async function extractEventsFromContent(content: string, user: User): Promise<Array<{
+async function extractEventsFromContent(content: string, _user: User): Promise<Array<{
   title: string
   event_date: string
   event_time: string | null
