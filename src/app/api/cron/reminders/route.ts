@@ -155,12 +155,62 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    return new NextResponse(`Reminders sent: ${remindersSent}`, { status: 200 })
+    const queuedSent = await sendQueuedMessages()
+
+    return new NextResponse(`Reminders sent: ${remindersSent}, Queued messages sent: ${queuedSent}`, { status: 200 })
 
   } catch (err) {
     console.error('Reminders cron error:', err)
     return new NextResponse('Cron job failed', { status: 500 })
   }
+}
+
+// ─── Queued Messages Handler ──────────────────────────────────────────────────
+
+async function sendQueuedMessages(): Promise<number> {
+  let sent = 0
+  const now = new Date()
+  const currentHour = parseInt(
+    now.toLocaleString('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      hour12: false,
+    })
+  )
+
+  // Only send queued messages during daytime hours
+  if (currentHour < 7 || currentHour >= 22) return 0
+
+  const { data: queuedRaw } = await supabase
+    .from('dropzone_onboarding')
+    .select('*')
+    .like('phone_number', 'coord_queued_%')
+    .eq('step', 'pending_send')
+
+  const queued = (queuedRaw ?? []) as Array<{
+    phone_number: string
+    data: Record<string, string>
+  }>
+
+  for (const item of queued) {
+    try {
+      if (item.data.to && item.data.message) {
+        await sendSMS(item.data.to, item.data.message)
+        sent++
+      }
+
+      // Delete the queued item
+      await supabase
+        .from('dropzone_onboarding')
+        .delete()
+        .eq('phone_number', item.phone_number)
+
+    } catch (err) {
+      console.error('Error sending queued message:', err)
+    }
+  }
+
+  return sent
 }
 
 // ─── Reminder Message Generators ─────────────────────────────────────────────
