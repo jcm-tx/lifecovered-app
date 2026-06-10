@@ -68,7 +68,9 @@ export default function PortalSchedulePage() {
     grouped[event.event_date]!.push(event)
   }
 
-  if (loading) return <div style={styles.loading}>Loading schedule...</div>
+  if (loading) {
+    return <div style={styles.loading}>Loading schedule...</div>
+  }
 
   return (
     <div style={styles.page}>
