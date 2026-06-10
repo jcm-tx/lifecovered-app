@@ -101,7 +101,9 @@ export default function PortalFamilyPage() {
   const kids = children.filter(c => c.type !== 'elderly')
   const elderly = children.filter(c => c.type === 'elderly')
 
-  if (loading) return <div style={styles.loading}>Loading...</div>
+  if (loading) {
+    return <div style={styles.loading}>Loading...</div>
+  }
 
   return (
     <div style={styles.page}>
