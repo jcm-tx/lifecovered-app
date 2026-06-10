@@ -176,6 +176,22 @@ export async function POST(req: NextRequest) {
       return twimlResponse(confirmMsg)
     }
 
+    // School calendar import — detect intent or PDF URL
+    const importIntent = /import|school calendar|school schedule|upload calendar|add calendar/i.test(body)
+    const pdfUrlMatch = /https?:\/\/[^\s]+\.pdf/i.exec(body)
+    const genericUrlMatch = /https?:\/\/[^\s]+/i.exec(body)
+
+    if (user && pdfUrlMatch) {
+      // Parent texted a direct PDF link
+      const pdfUrl = pdfUrlMatch[0]
+      return twimlResponse(await handlePdfUrl(pdfUrl, user, channel))
+    }
+
+    if (user && importIntent && !pdfUrlMatch) {
+      // Parent wants to import but didn't provide URL yet
+      return twimlResponse(`Sure! Two ways to import your school calendar:\n\n1. Forward the email from your school to schedule@lifecovered.app\n2. Text me the direct link to the PDF calendar\n\nI'll pull out all the events and add them automatically. 📅`)
+    }
+
     // Note: Quiet hours (10pm-7am) only apply to OUTBOUND proactive messages
     // (reminders, briefings, coordination requests to village members)
     // Mary always responds to parents who text her directly
@@ -596,6 +612,166 @@ async function handleCoordinationReply(body: string, session: OnboardingSession)
 }
 
 // ─── Token Generator ──────────────────────────────────────────────────────────
+
+async function handlePdfUrl(url: string, user: User, channel: string): Promise<string> {
+  try {
+    // Fetch the PDF
+    const response = await fetch(url)
+    if (!response.ok) {
+      return `I wasn't able to fetch that PDF — it may require a login or the link may have expired. Try forwarding the email to schedule@lifecovered.app instead.`
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('pdf') && !url.toLowerCase().includes('.pdf')) {
+      return `That link doesn't appear to be a PDF. Try forwarding the email directly to schedule@lifecovered.app and I'll parse it from there.`
+    }
+
+    const arrayBuffer = await response.arrayBuffer()
+    const base64 = Buffer.from(arrayBuffer).toString('base64')
+
+    // Parse PDF with Claude
+    const pdfText = await parsePdfWithClaude(base64)
+    if (!pdfText) {
+      return `I had trouble reading that PDF. Try forwarding it as an email attachment to schedule@lifecovered.app instead.`
+    }
+
+    // Extract events
+    const events = await extractEventsFromContent(pdfText, user)
+    if (events.length === 0) {
+      return `I read the PDF but couldn't find any events with dates. It may be formatted in a way I can't parse yet. Try forwarding to schedule@lifecovered.app and I'll take another look.`
+    }
+
+    // Save events
+    let savedCount = 0
+    for (const event of events) {
+      if (!event.event_date || !/^\d{4}-\d{2}-\d{2}$/.test(event.event_date)) continue
+
+      let childId: string | null = null
+      if (event.child_name) {
+        const { data: childRaw } = await supabase
+          .from('children')
+          .select('id')
+          .eq('family_id', user.family_id)
+          .ilike('name', `%${event.child_name}%`)
+          .single()
+        const child = childRaw as { id: string } | null
+        childId = child?.id ?? null
+      }
+
+      await supabase.from('events').insert({
+        family_id: user.family_id,
+        child_id: childId,
+        title: event.title,
+        event_date: event.event_date,
+        event_time: event.event_time ?? null,
+        notes: event.notes ?? null,
+        confirmed: false,
+      })
+      savedCount++
+    }
+
+    await supabase.from('messages').insert({
+      family_id: user.family_id,
+      user_id: user.id,
+      direction: 'inbound',
+      channel,
+      content: `PDF import: ${url}`,
+    })
+
+    const summary = events
+      .slice(0, 3)
+      .map((e: any) => `${e.title}${e.event_date ? ' on ' + e.event_date : ''}`)
+      .join(', ')
+    const moreText = events.length > 3 ? ` and ${events.length - 3} more` : ''
+
+    return `Got it! I found ${savedCount} event${savedCount !== 1 ? 's' : ''} in that PDF — ${summary}${moreText}. All saved and reminders set. 📅`
+
+  } catch (err) {
+    console.error('PDF URL handling error:', err)
+    return `Something went wrong reading that PDF. Try forwarding it to schedule@lifecovered.app instead.`
+  }
+}
+
+async function parsePdfWithClaude(base64Pdf: string): Promise<string> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64Pdf,
+            },
+          },
+          {
+            type: 'text',
+            text: 'Extract all events, dates, times, and activities from this document. List them clearly with dates and times where available.',
+          },
+        ],
+      }],
+    }),
+  })
+
+  const result = await response.json() as { content?: Array<{ text?: string }> }
+  return result.content?.[0]?.text ?? ''
+}
+
+async function extractEventsFromContent(content: string, user: User): Promise<Array<{
+  title: string
+  event_date: string
+  event_time: string | null
+  child_name: string | null
+  notes: string | null
+}>> {
+  const now = new Date()
+  const todayISO = now.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: `Today is ${todayISO}. Extract ALL events from this content. Return ONLY valid JSON.
+
+Content:
+${content}
+
+Return: {"events": [{"title": "Soccer practice", "event_date": "2026-06-10", "event_time": "16:00", "child_name": null, "notes": null}]}
+- YYYY-MM-DD dates, HH:MM times (24hr)
+- Skip past events
+- Return {"events": []} if none found`
+      }],
+    }),
+  })
+
+  const result = await response.json() as { content?: Array<{ text?: string }> }
+  const text = result.content?.[0]?.text?.trim() ?? '{"events": []}'
+
+  try {
+    const parsed = JSON.parse(text) as { events: Array<any> }
+    return parsed.events ?? []
+  } catch {
+    return []
+  }
+}
 
 function generateToken(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
