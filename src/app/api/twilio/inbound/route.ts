@@ -480,7 +480,8 @@ async function handleOnboarding(
         const family = familyRaw as { calendar_token: string } | null
         if (family?.calendar_token) {
           const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${family.calendar_token}/feed.ics`
-          return `Here's your calendar link — add it to Apple Calendar or Google Calendar and every event I save will appear automatically:\n\n${icalUrl}\n\nWhat's the first thing on your schedule?`
+          const shortUrl = await shortenUrl(icalUrl)
+          return `Here's your calendar link — add it to Apple Calendar or Google Calendar and every event I save will appear automatically:\n\n${shortUrl}\n\nWhat's the first thing on your schedule?`
         }
       }
 
@@ -1220,6 +1221,17 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
   }
 }
 
+async function shortenUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`)
+    if (!res.ok) return url
+    const short = await res.text()
+    return short.startsWith('https://tinyurl.com') ? short.trim() : url
+  } catch {
+    return url
+  }
+}
+
 async function getIcalMessage(user: User): Promise<string> {
   try {
     const { data: familyRaw } = await supabase
@@ -1230,7 +1242,8 @@ async function getIcalMessage(user: User): Promise<string> {
     const family = familyRaw as { calendar_token: string } | null
     if (!family?.calendar_token) return "I don't have a calendar link set up for your account yet. Contact support@lifecovered.app and we'll get that sorted."
     const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${family.calendar_token}/feed.ics`
-    return `Here's your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${icalUrl}`
+    const shortUrl = await shortenUrl(icalUrl)
+    return `Here's your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${shortUrl}`
   } catch {
     return "I had trouble finding your calendar link. Text us at support@lifecovered.app and we'll sort it out."
   }
