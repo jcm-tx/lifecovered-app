@@ -91,6 +91,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Check for PDF URL in email body even without attachment
+    const pdfUrlMatch = /https?:\/\/[^\s<>"]+\.pdf/i.exec(emailContent)
+    if (pdfUrlMatch && attachmentCount === 0) {
+      try {
+        const pdfUrl = pdfUrlMatch[0]
+        const pdfResponse = await fetch(pdfUrl)
+        if (pdfResponse.ok) {
+          const arrayBuffer = await pdfResponse.arrayBuffer()
+          const base64 = Buffer.from(arrayBuffer).toString('base64')
+          pdfContent += '\n\nPDF FROM LINK:\n' + await parsePdfWithClaude(base64)
+        }
+      } catch (err) {
+        console.error('Error fetching PDF from email URL:', err)
+      }
+    }
+
     const fullContent = `Email subject: ${subject}\n\nEmail body:\n${emailContent}${pdfContent}`
 
     // Extract events via Claude
