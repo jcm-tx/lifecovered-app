@@ -30,7 +30,10 @@ export default function PortalFamilyPage() {
   const [saving, setSaving] = useState(false)
   const router = useRouter()
 
-  useEffect(() => { void loadData() }, [])
+  useEffect(() => {
+    void loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function loadData() {
     const res = await fetch('/api/portal/family')
@@ -98,7 +101,9 @@ export default function PortalFamilyPage() {
   const kids = children.filter(c => c.type !== 'elderly')
   const elderly = children.filter(c => c.type === 'elderly')
 
-  if (loading) return <div style={styles.loading}>Loading...</div>
+  if (loading) {
+    return <div style={styles.loading}>Loading...</div>
+  }
 
   return (
     <div style={styles.page}>
