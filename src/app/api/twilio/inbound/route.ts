@@ -176,28 +176,9 @@ export async function POST(req: NextRequest) {
       return twimlResponse(confirmMsg)
     }
 
-    // Quiet hours — no responses 10pm to 7am in user's timezone
-    if (user) {
-      const userTimezone = (user as any).timezone ?? 'America/Chicago'
-      const currentHour = parseInt(
-        new Date().toLocaleString('en-US', {
-          timeZone: userTimezone,
-          hour: 'numeric',
-          hour12: false,
-        })
-      )
-      if (currentHour >= 22 || currentHour < 7) {
-        // Log the message but don't respond
-        await supabase.from('messages').insert({
-          family_id: user.family_id,
-          user_id: user.id,
-          direction: 'inbound',
-          channel,
-          content: body,
-        })
-        return twimlResponse("It's late — I'll take care of this first thing in the morning! 🌙")
-      }
-    }
+    // Note: Quiet hours (10pm-7am) only apply to OUTBOUND proactive messages
+    // (reminders, briefings, coordination requests to village members)
+    // Mary always responds to parents who text her directly
 
     await supabase.from('messages').insert({
       family_id: familyId,
@@ -425,13 +406,22 @@ async function handleOnboarding(
           })
           if (villageError) console.error('Village insert error:', JSON.stringify(villageError))
 
-          // Send welcome text to village member
+          // Send welcome text — respect quiet hours
           if (!villageError) {
-            const parentName = sessionData.name ?? 'Someone'
-            await sendSMS(
-              member.phone,
-              `Hey ${member.name}! ${parentName} added you to their Life. Covered. village. I'm Mary, an AI coordinator — I'll reach out when I need your help coordinating pickups or schedules. Reply STOP anytime to opt out.`
+            const welcomeHour = parseInt(
+              new Date().toLocaleString('en-US', {
+                timeZone: 'America/Chicago',
+                hour: 'numeric',
+                hour12: false,
+              })
             )
+            const parentName = sessionData.name ?? 'Someone'
+            if (welcomeHour >= 7 && welcomeHour < 22) {
+              await sendSMS(
+                member.phone,
+                `Hey ${member.name}! ${parentName} added you to their Life. Covered. village. I'm Mary, an AI coordinator — I'll reach out when I need your help coordinating pickups or schedules. Reply STOP anytime to opt out.`
+              )
+            }
           }
         }
       }
@@ -1165,13 +1155,40 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
       },
     })
 
-    // Text the village member
+    // Text the village member — respect their quiet hours
+    const villagerHour = parseInt(
+      new Date().toLocaleString('en-US', {
+        timeZone: 'America/Chicago',
+        hour: 'numeric',
+        hour12: false,
+      })
+    )
+
     const timeStr = data.event_time ? ` at ${data.event_time}` : ''
     const childStr = data.child_name ? ` for ${data.child_name}` : ''
-    await sendSMS(
-      villager.phone_number,
-      `Hey ${villager.name}! ${user.name} is asking if you can cover ${data.event_title}${childStr} on ${data.event_date}${timeStr}. Can you make it? Reply YES or NO.`
-    )
+    const coordMessage = `Hey ${villager.name}! ${user.name} is asking if you can cover ${data.event_title}${childStr} on ${data.event_date}${timeStr}. Can you make it? Reply YES or NO.`
+
+    if (villagerHour >= 22 || villagerHour < 7) {
+      // Queue for morning — store in dropzone_onboarding with pending_send flag
+      await supabase.from('dropzone_onboarding').insert({
+        phone_number: `coord_queued_${villager.phone_number}_${Date.now()}`,
+        step: 'pending_send',
+        data: {
+          to: villager.phone_number,
+          message: coordMessage,
+          parent_phone: user.id,
+          parent_name: user.name,
+          village_name: villager.name,
+        },
+      })
+      // Notify parent that the request will go out in the morning
+      await sendSMS(
+        user.id,
+        `Got it — it's late so I'll reach out to ${villager.name} first thing in the morning to confirm. I'll let you know what they say! 🌙`
+      )
+    } else {
+      await sendSMS(villager.phone_number, coordMessage)
+    }
   } catch (err) {
     console.error('Coordination request error:', err)
   }
