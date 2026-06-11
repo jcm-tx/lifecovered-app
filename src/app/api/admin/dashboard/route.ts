@@ -54,6 +54,13 @@ export async function GET(): Promise<NextResponse> {
         .not('phone_number', 'like', 'coord_%')
         .not('phone_number', 'like', 'age_pending_%')
         .order('created_at', { ascending: true }),
+      // Check last outbound reminder message as cron health indicator
+      supabase.from('messages')
+        .select('created_at')
+        .eq('direction', 'outbound')
+        .eq('channel', 'sms')
+        .order('created_at', { ascending: false })
+        .limit(1),
     ])
 
     return NextResponse.json({
