@@ -332,6 +332,15 @@ async function handleOnboarding(
         await supabase.from('children').insert(elderly)
       }
 
+      if (kids.length === 0 && elderly.length === 0) {
+        // Parse failed — ask again
+        await supabase
+          .from('dropzone_onboarding')
+          .update({ step: 'awaiting_kids', data: sessionData })
+          .eq('phone_number', phoneNumber)
+        return `Sorry, I had trouble reading that. Could you try again? Just list their names and ages — like "Jake 10, Emma 8" or "2 kids: Jake 10 and Emma 8".`
+      }
+
       return `Perfect. Is there anyone else in your village I should reach about the kids? A co-parent, partner, grandparent, nanny — anyone who helps. If yes, what's their name and phone number? If not, just say "no".`
     }
 
@@ -387,8 +396,12 @@ async function handleOnboarding(
         console.error('Village parsed:', JSON.stringify(members))
 
         if (members.length === 0 && !sessionData.village_declined) {
-          // Had text but couldn't parse valid name+phone
-          villageParseFailedMsg = " One thing — I wasn't able to save your village member's contact info. You can add them anytime by texting me their name and a 10-digit phone number."
+          const hasDigits = /\d/.test(villageText)
+          if (hasDigits) {
+            villageParseFailedMsg = " One thing — I wasn't able to save your village member's contact info (the phone number may be incomplete). You can add them anytime by texting me their name and a 10-digit phone number."
+          } else {
+            villageParseFailedMsg = " One thing — I didn't catch a phone number for your village member. You can add them anytime by texting me their name and a 10-digit phone number."
+          }
           console.error('Village parse failed — possible incomplete phone number')
         }
 
@@ -963,11 +976,34 @@ All data blocks will be stripped before sending to the user.`
     }),
   })
 
-  const result = await apiResponse.json() as { content?: Array<{ text?: string }> }
-  const fullText = result.content?.[0]?.text ?? "Got it — I'll take care of that."
+  const result = await apiResponse.json() as { content?: Array<{ text?: string }>; error?: { message?: string } }
+  
+  // Detect Claude API failure — don't silently return fallback
+  if (!result.content?.[0]?.text) {
+    console.error('Claude API failed:', JSON.stringify(result))
+    return "Sorry — I ran into a technical issue and nothing was saved. Could you try sending that again?"
+  }
+  
+  const fullText = result.content[0].text
 
   if (fullText.includes('<event_data>')) {
-    const newChildren = await extractAndStoreEvent(fullText, user)
+    const { newChildren, failed } = await extractAndStoreEvent(fullText, user)
+
+    if (failed) {
+      const stripped = fullText
+        .replace(/<[a-z_]+>[\s\S]*?<\/[a-z_]+>/g, '')
+        .replace(/<[a-z_]+>/g, '')
+        .replace(/<\/[a-z_]+>/g, '')
+        .replace(/\*Intent:[\s\S]*?\*/g, '')
+        .replace(/Intent:\s*\w+\n?/g, '')
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1')
+        .replace(/^#{1,3}\s+/gm, '')
+        .replace(/^\d+\.\s+/gm, '')
+        .trim()
+      return stripped + " (Heads up — I had trouble saving that. Could you resend it so I can make sure it's locked in?)"
+    }
+
     if (newChildren.length > 0) {
       const firstName = newChildren[0]!
 
@@ -984,7 +1020,7 @@ All data blocks will be stripped before sending to the user.`
 
       // Create a pending session to capture the age response
       if (newChild?.id) {
-        await supabase.from('dropzone_onboarding').insert({
+        const { error: sessionError } = await supabase.from('dropzone_onboarding').insert({
           phone_number: `age_pending_${user.id}`,
           step: 'awaiting_child_age',
           data: {
@@ -993,6 +1029,14 @@ All data blocks will be stripped before sending to the user.`
             user_phone: user.id,
           },
         })
+        if (sessionError) {
+          console.error('Age pending session insert error:', sessionError)
+          // Don't ask for age if we can't save the session — would be ignored anyway
+          newChildren.length = 0
+        }
+      } else {
+        // Child record wasn't created — don't ask for age
+        newChildren.length = 0
       }
 
       const names = newChildren.join(' and ')
@@ -1059,12 +1103,13 @@ All data blocks will be stripped before sending to the user.`
 
 // ─── Event Extraction ─────────────────────────────────────────────────────────
 
-async function extractAndStoreEvent(claudeText: string, user: User): Promise<string[]> {
+async function extractAndStoreEvent(claudeText: string, user: User): Promise<{ newChildren: string[]; failed: boolean }> {
   const newChildren: string[] = []
+  let failed = false
 
   try {
     const matches = [...claudeText.matchAll(/<event_data>([\s\S]*?)<\/event_data>/g)]
-    if (matches.length === 0) return newChildren
+    if (matches.length === 0) return { newChildren, failed }
 
     for (const match of matches) {
       if (!match[1]) continue
@@ -1083,6 +1128,7 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
 
         if (!event_date || !/^\d{4}-\d{2}-\d{2}$/.test(event_date)) {
           console.error('Invalid event_date format:', event_date)
+          failed = true
           continue
         }
 
@@ -1098,7 +1144,6 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
           childId = child?.id ?? null
 
           if (!childId) {
-            // Don't create a child record if the name matches the parent
             const isParent = user.name.toLowerCase().includes(child_name.toLowerCase()) ||
               child_name.toLowerCase().includes(user.name.toLowerCase().split(' ')[0]!)
             if (isParent) {
@@ -1117,10 +1162,7 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
                 .single()
               const newChild = newChildRaw as { id: string } | null
               childId = newChild?.id ?? null
-
-              if (!isElderly) {
-                newChildren.push(child_name)
-              }
+              if (!isElderly) newChildren.push(child_name)
             }
           }
         }
@@ -1128,7 +1170,7 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
         const dates = generateEventDates(event_date, recurring)
 
         for (const date of dates) {
-          await supabase.from('events').insert({
+          const { error: insertError } = await supabase.from('events').insert({
             family_id: user.family_id,
             child_id: childId,
             title,
@@ -1137,6 +1179,11 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
             notes: notes ?? null,
             confirmed: false,
           })
+
+          if (insertError) {
+            console.error('Event insert error:', insertError)
+            failed = true
+          }
 
           // Check for conflicts on this date/time
           if (event_time && childId) {
@@ -1152,7 +1199,6 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
             if (conflicts && conflicts.length > 0) {
               const conflictTitles = conflicts.map((c: any) => `${c.title} at ${c.event_time}`).join(', ')
               console.error(`Conflict detected for child ${childId} on ${date}: ${title} conflicts with ${conflictTitles}`)
-              // Store conflict for response — will be picked up by callClaude
               await supabase.from('messages').insert({
                 family_id: user.family_id,
                 user_id: null,
@@ -1165,13 +1211,15 @@ async function extractAndStoreEvent(claudeText: string, user: User): Promise<str
         }
       } catch (innerErr) {
         console.error('Error parsing individual event_data block:', innerErr)
+        failed = true
       }
     }
   } catch (err) {
     console.error('Event extraction error:', err)
+    failed = true
   }
 
-  return newChildren
+  return { newChildren, failed }
 }
 
 async function extractAndSaveVillageMember(claudeText: string, user: User): Promise<void> {
@@ -1247,12 +1295,27 @@ async function getIcalMessage(user: User): Promise<string> {
       .eq('id', user.family_id)
       .single()
     const family = familyRaw as { calendar_token: string } | null
-    if (!family?.calendar_token) return "I don't have a calendar link set up for your account yet. Contact support@lifecovered.app and we'll get that sorted."
-    const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${family.calendar_token}/feed.ics`
+
+    let token = family?.calendar_token
+
+    // Auto-generate missing token rather than failing silently
+    if (!token) {
+      const newToken = generateToken()
+      const { error: updateError } = await supabase
+        .from('families')
+        .update({ calendar_token: newToken })
+        .eq('id', user.family_id)
+      if (updateError) {
+        return "I had trouble generating your calendar link. Text support@lifecovered.app and we\'ll get it sorted."
+      }
+      token = newToken
+    }
+
+    const icalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/api/calendar/${token}/feed.ics`
     const shortUrl = await shortenUrl(icalUrl)
-    return `Here's your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${shortUrl}`
+    return `Here\'s your calendar link — add it to Apple Calendar or Google Calendar once and every event I save will appear automatically:\n\n${shortUrl}`
   } catch {
-    return "I had trouble finding your calendar link. Text us at support@lifecovered.app and we'll sort it out."
+    return "I had trouble finding your calendar link. Text us at support@lifecovered.app and we\'ll sort it out."
   }
 }
 
@@ -1323,7 +1386,14 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
       .single()
 
     const villager = villageRaw as { id: string; name: string; phone_number: string } | null
-    if (!villager?.phone_number) return
+    if (!villager?.phone_number) {
+      // Notify parent that village member wasn't found
+      await sendSMS(
+        user.id,
+        `I don't have ${data.village_member_name}'s contact info on file. Text me their name and phone number to add them to your village first, then I can coordinate with them.`
+      )
+      return
+    }
 
     // Find the event to get its ID
     const { data: eventRaw } = await supabase
