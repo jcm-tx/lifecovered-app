@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       await sendReplyEmail(
         senderEmail,
         'Re: ' + subject,
-        `Hi! We got your message and will get back to you shortly.\n\nFor faster help, you can also text Mary at (866) 618-2822.\n\nLife. Covered.`
+        `Hi! We got your message and someone from the Life. Covered. team will get back to you shortly.\n\nLife. Covered.\nsupport@lifecovered.app`
       )
       return new NextResponse('OK', { status: 200 })
     }
