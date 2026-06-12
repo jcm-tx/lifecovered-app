@@ -9,12 +9,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-// GET — fetch family data (kids + village members)
+// GET — fetch family data (kids + village members + user name)
 export async function GET(): Promise<NextResponse> {
   const session = await getPortalSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const [{ data: children }, { data: village }] = await Promise.all([
+  const [{ data: children }, { data: village }, { data: userRaw }] = await Promise.all([
     supabase
       .from('children')
       .select('id, name, age, school, type')
@@ -27,9 +27,20 @@ export async function GET(): Promise<NextResponse> {
       .eq('family_id', session.familyId)
       .neq('id', session.userId)
       .order('name'),
+    supabase
+      .from('users')
+      .select('name')
+      .eq('id', session.userId)
+      .single(),
   ])
 
-  return NextResponse.json({ children: children ?? [], village: village ?? [] })
+  const user = userRaw as { name: string } | null
+
+  return NextResponse.json({
+    children: children ?? [],
+    village: village ?? [],
+    userName: user?.name ?? '',
+  })
 }
 
 // POST — add or update a child or village member
@@ -50,14 +61,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   if (body.type === 'child') {
     if (body.id) {
-      // Update existing child
       await supabase
         .from('children')
         .update({ name: body.name, age: body.age ?? null, school: body.school ?? null })
         .eq('id', body.id)
         .eq('family_id', session.familyId)
     } else {
-      // Add new child
       await supabase.from('children').insert({
         family_id: session.familyId,
         name: body.name,
@@ -70,14 +79,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   if (body.type === 'village') {
     if (body.id) {
-      // Update existing village member
       await supabase
         .from('users')
         .update({ name: body.name })
         .eq('id', body.id)
         .eq('family_id', session.familyId)
     } else if (body.phone) {
-      // Add new village member
       const rawPhone = body.phone.replace(/[^\d]/g, '')
       const phone = rawPhone.length === 10 ? `+1${rawPhone}` : `+${rawPhone}`
       await supabase.from('users').insert({
@@ -114,7 +121,7 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
       .delete()
       .eq('id', id)
       .eq('family_id', session.familyId)
-      .neq('id', session.userId) // Can't delete yourself
+      .neq('id', session.userId)
   }
 
   return NextResponse.json({ success: true })
