@@ -1,33 +1,28 @@
 'use client'
-// src/app/portal/family/page.tsx
+// src/app/portal/home/page.tsx
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-interface Child {
+interface Event {
   id: string
-  name: string
-  age: number | null
-  school: string | null
-  type: string
+  title: string
+  event_date: string
+  event_time: string | null
+  confirmed: boolean
+  children: { name: string; type: string } | null
+  assigned_user: { name: string } | null
 }
 
-interface VillageMember {
-  id: string
-  name: string
-  phone_number: string
-  role: string
+interface FamilyData {
+  children: Array<{ id: string; name: string; age: number | null; type: string }>
+  village: Array<{ id: string; name: string; role: string }>
+  userName: string
 }
 
-export default function PortalFamilyPage() {
-  const [children, setChildren] = useState<Child[]>([])
-  const [village, setVillage] = useState<VillageMember[]>([])
+export default function PortalHomePage() {
+  const [events, setEvents] = useState<Event[]>([])
+  const [family, setFamily] = useState<FamilyData>({ children: [], village: [], userName: '' })
   const [loading, setLoading] = useState(true)
-  const [editingChild, setEditingChild] = useState<Child | null>(null)
-  const [addingChild, setAddingChild] = useState(false)
-  const [addingVillage, setAddingVillage] = useState(false)
-  const [newChild, setNewChild] = useState({ name: '', age: '', school: '', type: 'child' })
-  const [newVillage, setNewVillage] = useState({ name: '', phone: '', role: 'village' })
-  const [saving, setSaving] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -36,73 +31,57 @@ export default function PortalFamilyPage() {
   }, [])
 
   async function loadData() {
-    const res = await fetch('/api/portal/family')
-    if (res.status === 401) { router.push('/portal'); return }
-    const data = await res.json() as { children: Child[]; village: VillageMember[] }
-    setChildren(data.children ?? [])
-    setVillage(data.village ?? [])
+    const [eventsRes, familyRes] = await Promise.all([
+      fetch('/api/portal/events'),
+      fetch('/api/portal/family'),
+    ])
+
+    if (eventsRes.status === 401 || familyRes.status === 401) {
+      router.push('/portal')
+      return
+    }
+
+    const eventsData = await eventsRes.json() as { events: Event[] }
+    const familyData = await familyRes.json() as FamilyData
+
+    setEvents(eventsData.events ?? [])
+    setFamily(familyData)
     setLoading(false)
   }
 
-  async function saveChild() {
-    setSaving(true)
-    await fetch('/api/portal/family', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'child',
-        id: editingChild?.id,
-        name: editingChild?.name ?? newChild.name,
-        age: editingChild ? editingChild.age : (newChild.age ? parseInt(newChild.age) : null),
-        school: editingChild?.school ?? newChild.school,
-        childType: editingChild?.type ?? newChild.type,
-      }),
-    })
-    setEditingChild(null)
-    setAddingChild(false)
-    setNewChild({ name: '', age: '', school: '', type: 'child' })
-    await loadData()
-    setSaving(false)
+  async function handleLogout() {
+    await fetch('/api/portal/auth?action=logout', { method: 'POST' })
+    router.push('/portal')
   }
 
-  async function saveVillage() {
-    setSaving(true)
-    await fetch('/api/portal/family', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'village', ...newVillage }),
-    })
-    setAddingVillage(false)
-    setNewVillage({ name: '', phone: '', role: 'village' })
-    await loadData()
-    setSaving(false)
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' })
+  const todayEvents = events.filter(e => e.event_date === today)
+  const upcomingEvents = events.filter(e => e.event_date > today).slice(0, 5)
+  const kids = family.children.filter(c => c.type !== 'elderly')
+  const elderly = family.children.filter(c => c.type === 'elderly')
+
+  function formatDate(dateStr: string): string {
+    const date = new Date(dateStr + 'T12:00:00')
+    return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
   }
 
-  async function deleteChild(id: string) {
-    if (!confirm('Remove this person from your family?')) return
-    await fetch('/api/portal/family', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, type: 'child' }),
-    })
-    await loadData()
+  function formatTime(timeStr: string | null): string {
+    if (!timeStr) return ''
+    const [hours, minutes] = timeStr.split(':').map(Number)
+    const period = hours! >= 12 ? 'pm' : 'am'
+    const displayHour = hours! % 12 || 12
+    return `${displayHour}:${String(minutes).padStart(2, '0')}${period}`
   }
 
-  async function deleteVillage(id: string) {
-    if (!confirm('Remove this village member?')) return
-    await fetch('/api/portal/family', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, type: 'village' }),
-    })
-    await loadData()
-  }
-
-  const kids = children.filter(c => c.type !== 'elderly')
-  const elderly = children.filter(c => c.type === 'elderly')
+  const hour = new Date().getHours()
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
   if (loading) {
-    return <div style={styles.loading}>Loading...</div>
+    return (
+      <div style={styles.page}>
+        <div style={styles.loading}>Loading your family dashboard...</div>
+      </div>
+    )
   }
 
   return (
@@ -110,138 +89,105 @@ export default function PortalFamilyPage() {
       <nav style={styles.nav}>
         <div style={styles.navLogo}>Life. Covered.</div>
         <div style={styles.navLinks}>
-          <a href="/portal/home" style={styles.navLink}>Home</a>
-          <a href="/portal/family" style={styles.navLinkActive}>Family</a>
+          <a href="/portal/home" style={styles.navLinkActive}>Home</a>
+          <a href="/portal/family" style={styles.navLink}>Family</a>
           <a href="/portal/schedule" style={styles.navLink}>Schedule</a>
+          <button onClick={handleLogout} style={styles.logoutBtn}>Log out</button>
         </div>
       </nav>
 
       <div style={styles.content}>
-        <h1 style={styles.pageTitle}>Your Family</h1>
+        <h1 style={styles.greeting}>
+          {greeting}{family.userName ? `, ${family.userName}` : ''}.
+        </h1>
 
-        {/* Kids */}
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Kids</h2>
-            <button onClick={() => setAddingChild(true)} style={styles.addBtn}>+ Add</button>
+        {/* Stats row */}
+        <div style={styles.statsRow}>
+          <div style={styles.statCard}>
+            <div style={styles.statNumber}>{kids.length + elderly.length}</div>
+            <div style={styles.statLabel}>Family members</div>
           </div>
+          <div style={styles.statCard}>
+            <div style={styles.statNumber}>{family.village.length}</div>
+            <div style={styles.statLabel}>Village members</div>
+          </div>
+          <div style={styles.statCard}>
+            <div style={styles.statNumber}>{events.length}</div>
+            <div style={styles.statLabel}>Upcoming events</div>
+          </div>
+          <div style={styles.statCard}>
+            <div style={styles.statNumber}>{todayEvents.length}</div>
+            <div style={styles.statLabel}>Today</div>
+          </div>
+        </div>
 
-          {addingChild && (
-            <div style={styles.formCard}>
-              <div style={styles.formRow}>
-                <input placeholder="Name" value={newChild.name} onChange={e => setNewChild({...newChild, name: e.target.value})} style={styles.input} />
-                <input placeholder="Age" type="number" value={newChild.age} onChange={e => setNewChild({...newChild, age: e.target.value})} style={{...styles.input, maxWidth: '80px'}} />
-                <input placeholder="School (optional)" value={newChild.school} onChange={e => setNewChild({...newChild, school: e.target.value})} style={styles.input} />
-                <select value={newChild.type} onChange={e => setNewChild({...newChild, type: e.target.value})} style={styles.select}>
-                  <option value="child">Child</option>
-                  <option value="elderly">Elderly dependent</option>
-                </select>
-              </div>
-              <div style={styles.formActions}>
-                <button onClick={saveChild} style={styles.saveBtn} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                <button onClick={() => setAddingChild(false)} style={styles.cancelBtn}>Cancel</button>
-              </div>
-            </div>
-          )}
-
-          {kids.length === 0 && !addingChild && (
-            <div style={styles.empty}>No kids added yet. <button onClick={() => setAddingChild(true)} style={styles.inlineBtn}>Add one</button></div>
-          )}
-
-          {kids.map(child => (
-            <div key={child.id} style={styles.personCard}>
-              {editingChild?.id === child.id ? (
-                <div>
-                  <div style={styles.formRow}>
-                    <input value={editingChild.name} onChange={e => setEditingChild({...editingChild, name: e.target.value})} style={styles.input} />
-                    <input type="number" placeholder="Age" value={editingChild.age ?? ''} onChange={e => setEditingChild({...editingChild, age: e.target.value ? parseInt(e.target.value) : null})} style={{...styles.input, maxWidth: '80px'}} />
-                    <input placeholder="School" value={editingChild.school ?? ''} onChange={e => setEditingChild({...editingChild, school: e.target.value})} style={styles.input} />
+        {/* Today */}
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>Today</h2>
+          {todayEvents.length === 0 ? (
+            <div style={styles.empty}>Nothing scheduled today — enjoy the free day! ☀️</div>
+          ) : (
+            <div style={styles.eventList}>
+              {todayEvents.map(event => (
+                <div key={event.id} style={styles.eventCard}>
+                  <div style={styles.eventTime}>{formatTime(event.event_time)}</div>
+                  <div style={styles.eventInfo}>
+                    <div style={styles.eventTitle}>{event.title}</div>
+                    {event.children && (
+                      <div style={styles.eventMeta}>{event.children.name}</div>
+                    )}
                   </div>
-                  <div style={styles.formActions}>
-                    <button onClick={saveChild} style={styles.saveBtn} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                    <button onClick={() => setEditingChild(null)} style={styles.cancelBtn}>Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div style={styles.personInfo}>
-                    <div style={styles.personName}>{child.name}</div>
-                    <div style={styles.personMeta}>
-                      {child.age && <span>Age {child.age}</span>}
-                      {child.school && <span> · {child.school}</span>}
-                    </div>
-                  </div>
-                  <div style={styles.personActions}>
-                    <button onClick={() => setEditingChild(child)} style={styles.editBtn}>Edit</button>
-                    <button onClick={() => deleteChild(child.id)} style={styles.deleteBtn}>Remove</button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-
-          {/* Elderly */}
-          {elderly.length > 0 && (
-            <>
-              <h3 style={styles.subTitle}>Elderly dependents</h3>
-              {elderly.map(person => (
-                <div key={person.id} style={styles.personCard}>
-                  <div style={styles.personInfo}>
-                    <div style={styles.personName}>{person.name}</div>
-                    {person.age && <div style={styles.personMeta}>Age {person.age}</div>}
-                  </div>
-                  <div style={styles.personActions}>
-                    <button onClick={() => setEditingChild(person)} style={styles.editBtn}>Edit</button>
-                    <button onClick={() => deleteChild(person.id)} style={styles.deleteBtn}>Remove</button>
-                  </div>
+                  {event.confirmed && <div style={styles.confirmedBadge}>Confirmed</div>}
                 </div>
               ))}
-            </>
+            </div>
           )}
         </div>
 
-        {/* Village */}
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Village</h2>
-            <button onClick={() => setAddingVillage(true)} style={styles.addBtn}>+ Add</button>
+        {/* Coming up */}
+        {upcomingEvents.length > 0 && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Coming up</h2>
+            <div style={styles.eventList}>
+              {upcomingEvents.map(event => (
+                <div key={event.id} style={styles.eventCard}>
+                  <div style={styles.eventDate}>{formatDate(event.event_date)}</div>
+                  <div style={styles.eventInfo}>
+                    <div style={styles.eventTitle}>{event.title}</div>
+                    <div style={styles.eventMeta}>
+                      {event.children?.name && <span>{event.children.name}</span>}
+                      {event.event_time && <span> · {formatTime(event.event_time)}</span>}
+                      {event.assigned_user && <span> · {event.assigned_user.name}</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <a href="/portal/schedule" style={styles.viewAll}>View full schedule →</a>
           </div>
+        )}
 
-          {addingVillage && (
-            <div style={styles.formCard}>
-              <div style={styles.formRow}>
-                <input placeholder="Name" value={newVillage.name} onChange={e => setNewVillage({...newVillage, name: e.target.value})} style={styles.input} />
-                <input placeholder="Phone number" value={newVillage.phone} onChange={e => setNewVillage({...newVillage, phone: e.target.value})} style={styles.input} />
-                <select value={newVillage.role} onChange={e => setNewVillage({...newVillage, role: e.target.value})} style={styles.select}>
-                  <option value="village">Village member</option>
-                  <option value="co-parent">Co-parent</option>
-                  <option value="partner">Partner</option>
-                  <option value="grandparent">Grandparent</option>
-                  <option value="nanny">Nanny</option>
-                </select>
-              </div>
-              <div style={styles.formActions}>
-                <button onClick={saveVillage} style={styles.saveBtn} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                <button onClick={() => setAddingVillage(false)} style={styles.cancelBtn}>Cancel</button>
-              </div>
-            </div>
-          )}
-
-          {village.length === 0 && !addingVillage && (
-            <div style={styles.empty}>No village members yet. <button onClick={() => setAddingVillage(true)} style={styles.inlineBtn}>Add one</button></div>
-          )}
-
-          {village.map(member => (
-            <div key={member.id} style={styles.personCard}>
-              <div style={styles.personInfo}>
-                <div style={styles.personName}>{member.name}</div>
-                <div style={styles.personMeta}>{member.phone_number} · {member.role}</div>
-              </div>
-              <div style={styles.personActions}>
-                <button onClick={() => deleteVillage(member.id)} style={styles.deleteBtn}>Remove</button>
-              </div>
-            </div>
-          ))}
+        {/* Quick actions */}
+        <div style={styles.section}>
+          <h2 style={styles.sectionTitle}>Quick actions</h2>
+          <div style={styles.actionGrid}>
+            <a href="/portal/family" style={styles.actionCard}>
+              <div style={styles.actionIcon}>👨‍👧‍👦</div>
+              <div style={styles.actionLabel}>Manage family</div>
+            </a>
+            <a href="/portal/schedule" style={styles.actionCard}>
+              <div style={styles.actionIcon}>📅</div>
+              <div style={styles.actionLabel}>View schedule</div>
+            </a>
+            <a href={`sms:+14322203767&body=Hi`} style={styles.actionCard}>
+              <div style={styles.actionIcon}>💬</div>
+              <div style={styles.actionLabel}>Text Mary</div>
+            </a>
+            <a href={`sms:+14322203767&body=BILLING`} style={styles.actionCard}>
+              <div style={styles.actionIcon}>💳</div>
+              <div style={styles.actionLabel}>Billing</div>
+            </a>
+          </div>
         </div>
       </div>
     </div>
@@ -249,34 +195,189 @@ export default function PortalFamilyPage() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: { minHeight: '100vh', background: '#FAF7F2', fontFamily: "'DM Sans', -apple-system, sans-serif" },
-  loading: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#78716C' },
-  nav: { background: '#FFFFFF', borderBottom: '1px solid #E7E3DC', padding: '0 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '64px' },
-  navLogo: { fontFamily: 'Georgia, serif', fontSize: '18px', fontWeight: '700', color: '#1C1917' },
-  navLinks: { display: 'flex', alignItems: 'center', gap: '24px' },
-  navLink: { fontSize: '14px', color: '#78716C', textDecoration: 'none', fontWeight: '500' },
-  navLinkActive: { fontSize: '14px', color: '#2d6a4f', textDecoration: 'none', fontWeight: '600' },
-  content: { maxWidth: '800px', margin: '0 auto', padding: '40px 24px' },
-  pageTitle: { fontFamily: 'Georgia, serif', fontSize: '32px', fontWeight: '700', color: '#1C1917', margin: '0 0 32px' },
-  section: { marginBottom: '48px' },
-  sectionHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' },
-  sectionTitle: { fontSize: '18px', fontWeight: '600', color: '#1C1917', margin: '0' },
-  subTitle: { fontSize: '15px', fontWeight: '600', color: '#78716C', margin: '20px 0 12px' },
-  addBtn: { background: '#2d6a4f', color: '#FFF', border: 'none', borderRadius: '8px', padding: '8px 16px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' },
-  formCard: { background: '#FFFFFF', borderRadius: '12px', padding: '20px', marginBottom: '12px', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' },
-  formRow: { display: 'flex', gap: '12px', flexWrap: 'wrap' },
-  formActions: { display: 'flex', gap: '8px', marginTop: '12px' },
-  input: { padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #E7E3DC', fontSize: '14px', color: '#1C1917', background: '#FAF7F2', outline: 'none', flex: '1', minWidth: '120px' },
-  select: { padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #E7E3DC', fontSize: '14px', color: '#1C1917', background: '#FAF7F2', outline: 'none' },
-  saveBtn: { background: '#2d6a4f', color: '#FFF', border: 'none', borderRadius: '8px', padding: '8px 16px', fontSize: '14px', fontWeight: '600', cursor: 'pointer' },
-  cancelBtn: { background: 'none', color: '#78716C', border: '1px solid #E7E3DC', borderRadius: '8px', padding: '8px 16px', fontSize: '14px', cursor: 'pointer' },
-  empty: { background: '#FFFFFF', borderRadius: '12px', padding: '24px', color: '#78716C', fontSize: '15px' },
-  inlineBtn: { background: 'none', border: 'none', color: '#2d6a4f', fontSize: '15px', fontWeight: '500', cursor: 'pointer', padding: '0' },
-  personCard: { background: '#FFFFFF', borderRadius: '12px', padding: '16px 20px', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' },
-  personInfo: { flex: 1 },
-  personName: { fontSize: '15px', fontWeight: '500', color: '#1C1917' },
-  personMeta: { fontSize: '13px', color: '#78716C', marginTop: '2px' },
-  personActions: { display: 'flex', gap: '8px' },
-  editBtn: { background: 'none', border: '1px solid #E7E3DC', borderRadius: '6px', padding: '6px 12px', fontSize: '13px', color: '#44403C', cursor: 'pointer' },
-  deleteBtn: { background: 'none', border: '1px solid #FCA5A5', borderRadius: '6px', padding: '6px 12px', fontSize: '13px', color: '#DC2626', cursor: 'pointer' },
+  page: {
+    minHeight: '100vh',
+    background: '#FAF7F2',
+    fontFamily: "'DM Sans', -apple-system, sans-serif",
+  },
+  loading: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '100vh',
+    color: '#78716C',
+    fontSize: '15px',
+  },
+  nav: {
+    background: '#FFFFFF',
+    borderBottom: '1px solid #E7E3DC',
+    padding: '0 40px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    height: '64px',
+  },
+  navLogo: {
+    fontFamily: 'Georgia, serif',
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#1C1917',
+  },
+  navLinks: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '24px',
+  },
+  navLink: {
+    fontSize: '14px',
+    color: '#78716C',
+    textDecoration: 'none',
+    fontWeight: '500',
+  },
+  navLinkActive: {
+    fontSize: '14px',
+    color: '#2d6a4f',
+    textDecoration: 'none',
+    fontWeight: '600',
+  },
+  logoutBtn: {
+    background: 'none',
+    border: '1px solid #E7E3DC',
+    borderRadius: '8px',
+    padding: '6px 14px',
+    fontSize: '14px',
+    color: '#78716C',
+    cursor: 'pointer',
+  },
+  content: {
+    maxWidth: '800px',
+    margin: '0 auto',
+    padding: '40px 24px',
+  },
+  greeting: {
+    fontFamily: 'Georgia, serif',
+    fontSize: '32px',
+    fontWeight: '700',
+    color: '#1C1917',
+    margin: '0 0 32px',
+  },
+  statsRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: '16px',
+    marginBottom: '40px',
+  },
+  statCard: {
+    background: '#FFFFFF',
+    borderRadius: '12px',
+    padding: '20px',
+    textAlign: 'center',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+  },
+  statNumber: {
+    fontSize: '32px',
+    fontWeight: '700',
+    color: '#2d6a4f',
+    fontFamily: 'Georgia, serif',
+  },
+  statLabel: {
+    fontSize: '13px',
+    color: '#78716C',
+    marginTop: '4px',
+  },
+  section: {
+    marginBottom: '40px',
+  },
+  sectionTitle: {
+    fontSize: '18px',
+    fontWeight: '600',
+    color: '#1C1917',
+    margin: '0 0 16px',
+  },
+  empty: {
+    background: '#FFFFFF',
+    borderRadius: '12px',
+    padding: '24px',
+    color: '#78716C',
+    fontSize: '15px',
+    textAlign: 'center',
+  },
+  eventList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  eventCard: {
+    background: '#FFFFFF',
+    borderRadius: '12px',
+    padding: '16px 20px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+  },
+  eventTime: {
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#2d6a4f',
+    minWidth: '56px',
+  },
+  eventDate: {
+    fontSize: '13px',
+    fontWeight: '600',
+    color: '#2d6a4f',
+    minWidth: '80px',
+  },
+  eventInfo: {
+    flex: 1,
+  },
+  eventTitle: {
+    fontSize: '15px',
+    fontWeight: '500',
+    color: '#1C1917',
+  },
+  eventMeta: {
+    fontSize: '13px',
+    color: '#78716C',
+    marginTop: '2px',
+  },
+  confirmedBadge: {
+    fontSize: '12px',
+    background: '#DCFCE7',
+    color: '#166534',
+    padding: '4px 10px',
+    borderRadius: '20px',
+    fontWeight: '500',
+  },
+  viewAll: {
+    display: 'inline-block',
+    marginTop: '12px',
+    fontSize: '14px',
+    color: '#2d6a4f',
+    textDecoration: 'none',
+    fontWeight: '500',
+  },
+  actionGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: '16px',
+  },
+  actionCard: {
+    background: '#FFFFFF',
+    borderRadius: '12px',
+    padding: '24px 16px',
+    textAlign: 'center',
+    textDecoration: 'none',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+    transition: 'transform 0.1s',
+  },
+  actionIcon: {
+    fontSize: '28px',
+    marginBottom: '8px',
+  },
+  actionLabel: {
+    fontSize: '14px',
+    color: '#44403C',
+    fontWeight: '500',
+  },
 }
