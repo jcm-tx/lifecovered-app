@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
       await sendReplyEmail(
         senderEmail,
         'Register your email with Life. Covered.',
-        `Hi there! We received your email but couldn't match it to a Life. Covered. account.\n\nTo forward schedules and calendars to us, you'll need to register this email address first.\n\nJust text Mary: "my email is ${senderEmail}"\n\nText Mary at (866) 618-2822 or via WhatsApp at (432) 220-3767.\n\nQuestions? Reply to this email and we'll help you get set up.\n\nLife. Covered.`
+        `Hi there! We received your email but couldn't match it to a Life. Covered. account.\n\nTo forward schedules and calendars to us, you'll need to register this email address first.\n\nJust text Mary: "my email is ${senderEmail}"\n\nText Mary at (866) 618-2822 or via WhatsApp at (432) 220-3767.\n\nLife. Covered.`
       )
       return new NextResponse('OK', { status: 200 })
     }
