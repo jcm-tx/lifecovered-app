@@ -51,12 +51,36 @@ export async function POST(req: NextRequest) {
       return new NextResponse('OK', { status: 200 })
     }
 
-    // Look up user by email
-    const { data: userRaw } = await supabase
+    // Look up user by email — check users.email first, then user_emails table
+    const normalizedSender = senderEmail.toLowerCase()
+
+    const { data: primaryUserRaw } = await supabase
       .from('users')
       .select('id, name, phone_number, family_id, stripe_status')
-      .eq('email', senderEmail.toLowerCase())
-      .single()
+      .eq('email', normalizedSender)
+      .maybeSingle()
+
+    let userRaw = primaryUserRaw
+
+    if (!userRaw) {
+      // Check user_emails table for additional registered addresses
+      const { data: emailRecordRaw } = await supabase
+        .from('user_emails')
+        .select('user_id')
+        .eq('email', normalizedSender)
+        .maybeSingle()
+
+      const emailRecord = emailRecordRaw as { user_id: string } | null
+
+      if (emailRecord?.user_id) {
+        const { data: linkedUserRaw } = await supabase
+          .from('users')
+          .select('id, name, phone_number, family_id, stripe_status')
+          .eq('id', emailRecord.user_id)
+          .single()
+        userRaw = linkedUserRaw
+      }
+    }
 
     const user = userRaw as {
       id: string
