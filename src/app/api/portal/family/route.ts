@@ -9,12 +9,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-// GET — fetch family data (kids + village members + user name)
+// GET — fetch family data (kids + village members + user name + emails)
 export async function GET(): Promise<NextResponse> {
   const session = await getPortalSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const [{ data: children }, { data: village }, { data: userRaw }] = await Promise.all([
+  const [{ data: children }, { data: village }, { data: userRaw }, { data: emails }] = await Promise.all([
     supabase
       .from('children')
       .select('id, name, age, school, type')
@@ -32,6 +32,11 @@ export async function GET(): Promise<NextResponse> {
       .select('name')
       .eq('id', session.userId)
       .single(),
+    supabase
+      .from('user_emails')
+      .select('id, email, created_at')
+      .eq('user_id', session.userId)
+      .order('created_at', { ascending: true }),
   ])
 
   const user = userRaw as { name: string } | null
@@ -40,23 +45,25 @@ export async function GET(): Promise<NextResponse> {
     children: children ?? [],
     village: village ?? [],
     userName: user?.name ?? '',
+    emails: emails ?? [],
   })
 }
 
-// POST — add or update a child or village member
+// POST — add or update a child, village member, or email
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const session = await getPortalSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as {
-    type: 'child' | 'village'
+    type: 'child' | 'village' | 'email'
     id?: string
-    name: string
+    name?: string
     age?: number | null
     school?: string | null
     childType?: 'child' | 'elderly'
     phone?: string
     role?: string
+    email?: string
   }
 
   if (body.type === 'child') {
@@ -97,15 +104,51 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  if (body.type === 'email' && body.email) {
+    const normalizedEmail = body.email.toLowerCase().trim()
+
+    // Check for duplicate
+    const { data: existing } = await supabase
+      .from('user_emails')
+      .select('id')
+      .eq('user_id', session.userId)
+      .eq('email', normalizedEmail)
+      .maybeSingle()
+
+    if (existing) {
+      return NextResponse.json({ error: 'Email already registered' }, { status: 409 })
+    }
+
+    await supabase.from('user_emails').insert({
+      user_id: session.userId,
+      family_id: session.familyId,
+      email: normalizedEmail,
+    })
+
+    // Keep users.email in sync with first registered email if not already set
+    const { data: userRaw } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', session.userId)
+      .single()
+    const existingUser = userRaw as { email: string | null } | null
+    if (!existingUser?.email) {
+      await supabase
+        .from('users')
+        .update({ email: normalizedEmail })
+        .eq('id', session.userId)
+    }
+  }
+
   return NextResponse.json({ success: true })
 }
 
-// DELETE — remove a child or village member
+// DELETE — remove a child, village member, or email
 export async function DELETE(req: NextRequest): Promise<NextResponse> {
   const session = await getPortalSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { id, type } = await req.json() as { id: string; type: 'child' | 'village' }
+  const { id, type } = await req.json() as { id: string; type: 'child' | 'village' | 'email' }
 
   if (type === 'child') {
     await supabase
@@ -122,6 +165,14 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
       .eq('id', id)
       .eq('family_id', session.familyId)
       .neq('id', session.userId)
+  }
+
+  if (type === 'email') {
+    await supabase
+      .from('user_emails')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', session.userId)
   }
 
   return NextResponse.json({ success: true })
