@@ -152,10 +152,36 @@ export async function POST(req: NextRequest) {
     const detectedEmail = emailRegMatch?.[1] ?? standaloneEmailMatch?.[0] ?? null
 
     if (detectedEmail && user) {
-      await supabase
-        .from('users')
-        .update({ email: detectedEmail.toLowerCase() })
-        .eq('id', user.id)
+      const normalizedEmail = detectedEmail.toLowerCase()
+
+      // Check if this email is already registered for this user
+      const { data: existingEmail } = await supabase
+        .from('user_emails')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('email', normalizedEmail)
+        .maybeSingle()
+
+      let confirmMsg: string
+
+      if (existingEmail) {
+        confirmMsg = `${normalizedEmail} is already registered on your account — you're all set. Forward any school emails to schedule@lifecovered.app and I'll add the events automatically. 📧`
+      } else {
+        // Save to users.email (primary, for backwards compatibility)
+        await supabase
+          .from('users')
+          .update({ email: normalizedEmail })
+          .eq('id', user.id)
+
+        // Save to user_emails (supports multiple)
+        await supabase.from('user_emails').insert({
+          user_id: user.id,
+          family_id: user.family_id,
+          email: normalizedEmail,
+        })
+
+        confirmMsg = `Got it — I've registered ${normalizedEmail} for your account. Forward any school emails, calendars, or schedules to schedule@lifecovered.app and I'll automatically add the events. 📧`
+      }
 
       await supabase.from('messages').insert({
         family_id: user.family_id,
@@ -164,8 +190,6 @@ export async function POST(req: NextRequest) {
         channel,
         content: body,
       })
-
-      const confirmMsg = `Got it — I've registered ${detectedEmail} for your account. Forward any school emails, calendars, or schedules to schedule@lifecovered.app and I'll automatically add the events. 📧`
 
       await supabase.from('messages').insert({
         family_id: user.family_id,
