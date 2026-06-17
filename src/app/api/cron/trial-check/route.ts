@@ -117,9 +117,12 @@ export async function GET(req: NextRequest) {
 
       // Day 7 — final reminder
       if (daysSinceStart === 7) {
+        const day7VillageNote = villageCount > 0
+          ? ` You have ${villageCount} village member${villageCount !== 1 ? 's' : ''} set up.`
+          : ''
         await sendSMS(
           user.phone_number as string,
-          `Last day of your trial, ${user.name}! Your ${planName} plan is ${planPrice}.${villageContext} Subscribe here before your data goes on hold: ${paymentLink}`
+          `Last day of your trial, ${user.name}! Subscribe to the ${planName} plan (${planPrice}) before your data goes on hold.${day7VillageNote} Here's your link: ${paymentLink}`
         )
       }
 
