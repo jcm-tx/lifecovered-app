@@ -289,7 +289,7 @@ async function handleOnboarding(
       step: 'awaiting_name',
       data: {},
     })
-    return "Hey! Welcome to Life. Covered. 👋 I'm Mary, an AI coordinator — I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?"
+    return "Welcome to Life. Covered.! You've opted in to receive family coordination messages from our AI assistant, Mary. Msg & data rates may apply. Message frequency varies. Reply HELP for help, STOP to cancel.\n\nI'm Mary 👋 I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?"
   }
 
   switch (session.step) {
@@ -444,25 +444,8 @@ async function handleOnboarding(
             continue
           }
 
-          // Check tier limits before adding
-          const { count: memberCount } = await supabase
-            .from('users')
-            .select('*', { count: 'exact', head: true })
-            .eq('family_id', sessionData.family_id)
-
-          const { data: familyRaw } = await supabase
-            .from('families')
-            .select('tier')
-            .eq('id', sessionData.family_id)
-            .single()
-          const familyTier = (familyRaw as { tier: string } | null)?.tier ?? 'solo'
-          const tierLimits: Record<string, number> = { solo: 1, family: 4, village: 8 }
-          const limit = tierLimits[familyTier] ?? 1
-
-          if ((memberCount ?? 0) >= limit) {
-            villageParseFailedMsg = ` One thing — you've reached the member limit for your current plan. To add more village members, you'll need to upgrade your plan at lifecovered.app.`
-            break
-          }
+          // No tier limit check during trial — let them add as many as they want.
+          // When trial ends, we'll tell them which plan they need based on member count.
 
           const { error: villageError } = await supabase.from('users').insert({
             phone_number: member.phone,
@@ -1302,27 +1285,30 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
       return
     }
 
-    // Check tier limits
-    const { count: memberCount } = await supabase
-      .from('users')
-      .select('*', { count: 'exact', head: true })
-      .eq('family_id', user.family_id)
+    // Skip tier limits during trial — let them add as many as they want.
+    // When trial ends, we tell them which plan they need based on member count.
+    if (user.stripe_status !== 'trial') {
+      const { count: memberCount } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('family_id', user.family_id)
 
-    const { data: familyRaw } = await supabase
-      .from('families')
-      .select('tier')
-      .eq('id', user.family_id)
-      .single()
-    const familyTier = (familyRaw as { tier: string } | null)?.tier ?? 'solo'
-    const tierLimits: Record<string, number> = { solo: 1, family: 4, village: 8 }
-    const limit = tierLimits[familyTier] ?? 1
+      const { data: familyRaw } = await supabase
+        .from('families')
+        .select('tier')
+        .eq('id', user.family_id)
+        .single()
+      const familyTier = (familyRaw as { tier: string } | null)?.tier ?? 'solo'
+      const tierLimits: Record<string, number> = { solo: 1, family: 4, village: 8 }
+      const limit = tierLimits[familyTier] ?? 1
 
-    if ((memberCount ?? 0) >= limit) {
-      await sendSMS(
-        user.id,
-        `You've reached the member limit for your ${familyTier} plan. To add more village members, upgrade your plan at lifecovered.app.`
-      )
-      return
+      if ((memberCount ?? 0) >= limit) {
+        await sendSMS(
+          user.id,
+          `You've reached the member limit for your ${familyTier} plan. To add more village members, upgrade your plan at lifecovered.app.`
+        )
+        return
+      }
     }
 
     await supabase.from('users').insert({
