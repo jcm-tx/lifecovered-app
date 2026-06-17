@@ -23,6 +23,38 @@ async function isBetaActive(): Promise<boolean> {
   return (count ?? 0) < 50
 }
 
+// Determine the right plan tier based on actual village member count
+async function getTierForFamily(familyId: string): Promise<{
+  tier: 'solo' | 'family' | 'village'
+  villageCount: number
+}> {
+  const { count } = await supabase
+    .from('users')
+    .select('*', { count: 'exact', head: true })
+    .eq('family_id', familyId)
+    .eq('role', 'village')
+
+  const villageCount = count ?? 0
+
+  let tier: 'solo' | 'family' | 'village'
+  if (villageCount === 0) tier = 'solo'
+  else if (villageCount <= 3) tier = 'family'
+  else tier = 'village'
+
+  return { tier, villageCount }
+}
+
+// Human-readable plan name and price for messaging
+function planLabel(tier: string, betaActive: boolean): { name: string; price: string } {
+  const plans: Record<string, { name: string; betaPrice: string; fullPrice: string }> = {
+    solo:    { name: 'Solo',    betaPrice: '$9/mo',  fullPrice: '$12/mo' },
+    family:  { name: 'Family',  betaPrice: '$14/mo', fullPrice: '$19/mo' },
+    village: { name: 'Village', betaPrice: '$19/mo', fullPrice: '$29/mo' },
+  }
+  const plan = plans[tier] ?? plans.solo!
+  return { name: plan.name, price: betaActive ? plan.betaPrice : plan.fullPrice }
+}
+
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -49,33 +81,45 @@ export async function GET(req: NextRequest) {
     }
 
     for (const user of trialUsers) {
-      const trialStart = new Date(user.trial_start)
+      const trialStart = new Date(user.trial_start as string)
       const daysSinceStart = Math.floor(
         (now.getTime() - trialStart.getTime()) / (1000 * 60 * 60 * 24)
       )
 
+      const { tier, villageCount } = await getTierForFamily(user.family_id as string)
+      const { name: planName, price: planPrice } = planLabel(tier, betaActive)
+      const eventCount = await getEventCount(user.family_id as string)
+
+      // Update family tier to match actual usage before creating payment link
+      await supabase
+        .from('families')
+        .update({ tier })
+        .eq('id', user.family_id)
+
+      const paymentLink = await createStripePaymentLink(user, tier, betaActive)
+
+      // Build a village context line for messaging
+      const villageContext = villageCount > 0
+        ? ` You have ${villageCount} village member${villageCount !== 1 ? 's' : ''} set up, so you're on the ${planName} plan (${planPrice}).`
+        : ''
+
+      const betaLockMsg = betaActive
+        ? ` Lock in ${planPrice} for life — this beta rate never goes up.`
+        : ''
+
       // Day 6 — first payment reminder
       if (daysSinceStart === 6) {
-        const paymentLink = await createStripePaymentLink(user, betaActive)
-        const eventCount = await getEventCount(user.family_id)
-        const betaMsg = betaActive
-          ? `Lock in our beta rate — Solo for $9/mo for life, never goes up.`
-          : `Keep it going for just $12/month.`
         await sendSMS(
-          user.phone_number,
-          `Hey ${user.name}! Your Life. Covered. trial ends tomorrow. You've got ${eventCount} events tracked and your family all set up. ${betaMsg} Tap here to continue: ${paymentLink}`
+          user.phone_number as string,
+          `Hey ${user.name}! Your Life. Covered. trial ends tomorrow. You've got ${eventCount} events tracked and your family all set up.${villageContext}${betaLockMsg} Tap here to continue: ${paymentLink}`
         )
       }
 
       // Day 7 — final reminder
       if (daysSinceStart === 7) {
-        const paymentLink = await createStripePaymentLink(user, betaActive)
-        const betaMsg = betaActive
-          ? `Lock in $9/mo for life before your trial ends`
-          : `Don't lose your family's schedule`
         await sendSMS(
-          user.phone_number,
-          `Last day of your trial, ${user.name}! ${betaMsg} — subscribe here: ${paymentLink}`
+          user.phone_number as string,
+          `Last day of your trial, ${user.name}! Your ${planName} plan is ${planPrice}.${villageContext} Subscribe here before your data goes on hold: ${paymentLink}`
         )
       }
 
@@ -87,8 +131,8 @@ export async function GET(req: NextRequest) {
           .eq('id', user.id)
 
         await sendSMS(
-          user.phone_number,
-          `Hey ${user.name} — your Life. Covered. trial has ended. Your family's data is safe and waiting whenever you're ready: ${process.env.NEXT_PUBLIC_SITE_URL}`
+          user.phone_number as string,
+          `Hey ${user.name} — your Life. Covered. trial has ended. Your family's data is safe and waiting. To pick up where you left off, subscribe to the ${planName} plan (${planPrice}) here: ${paymentLink}`
         )
       }
     }
@@ -109,23 +153,20 @@ async function createStripePaymentLink(
     phone_number: string
     stripe_customer_id: string | null
     family_id: string
-    families: { tier: string } | null
   },
+  tier: 'solo' | 'family' | 'village',
   betaActive: boolean
 ): Promise<string> {
   try {
-    const tier = user.families?.tier ?? 'solo'
-
-    // Use beta price IDs during beta period, full price IDs after
     const priceMap: Record<string, string> = betaActive
       ? {
-          solo: process.env.STRIPE_PRICE_BETA_SOLO ?? process.env.STRIPE_PRICE_SOLO!,
-          family: process.env.STRIPE_PRICE_BETA_FAMILY ?? process.env.STRIPE_PRICE_FAMILY!,
+          solo:    process.env.STRIPE_PRICE_BETA_SOLO    ?? process.env.STRIPE_PRICE_SOLO!,
+          family:  process.env.STRIPE_PRICE_BETA_FAMILY  ?? process.env.STRIPE_PRICE_FAMILY!,
           village: process.env.STRIPE_PRICE_BETA_VILLAGE ?? process.env.STRIPE_PRICE_VILLAGE!,
         }
       : {
-          solo: process.env.STRIPE_PRICE_SOLO!,
-          family: process.env.STRIPE_PRICE_FAMILY!,
+          solo:    process.env.STRIPE_PRICE_SOLO!,
+          family:  process.env.STRIPE_PRICE_FAMILY!,
           village: process.env.STRIPE_PRICE_VILLAGE!,
         }
 
