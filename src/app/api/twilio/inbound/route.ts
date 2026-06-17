@@ -289,7 +289,7 @@ async function handleOnboarding(
       step: 'awaiting_name',
       data: {},
     })
-    return "Welcome to Life. Covered.! You've opted in to receive family coordination messages from our AI assistant, Mary. Msg & data rates may apply. Message frequency varies. Reply HELP for help, STOP to cancel.\n\nI'm Mary 👋 I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?"
+    return "Welcome to Life. Covered.! I'm Mary 👋 I help families stay on top of schedules, pickups, and all the moving pieces. What's your name?\n\nYou've opted in to receive family coordination messages from our AI assistant, Mary. Msg & data rates may apply. Message frequency varies. Reply HELP for help, STOP to cancel."
   }
 
   switch (session.step) {
