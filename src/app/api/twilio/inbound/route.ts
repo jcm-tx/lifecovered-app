@@ -16,6 +16,7 @@ const supabase = createClient(
 
 interface User {
   id: string
+  phone_number: string
   family_id: string
   name: string
   role: string
@@ -635,21 +636,23 @@ async function handleCoordinationReply(body: string, session: OnboardingSession)
       }
     }
 
+    const whenStr = `${eventDate ? ' ' + formatDate(eventDate, null) : ''}${eventTime ? ' at ' + formatTime(eventTime) : ''}`
+
     // Notify parent
     if (parentPhone) {
       await sendSMS(
         parentPhone,
-        `${sessionData.village_name ?? 'Your village member'} confirmed they'll cover ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}${eventTime ? ' at ' + eventTime : ''}. You're covered! 👍`
+        `${sessionData.village_name ?? 'Your village member'} confirmed they'll cover ${childName ? childName + "'s " : ''}${eventTitle}${whenStr}. You're covered! 👍`
       )
     }
 
-    return `Perfect — you're confirmed for ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}${eventTime ? ' at ' + eventTime : ''}. I'll remind you 2 hours before. 👍`
+    return `Perfect — you're confirmed for ${childName ? childName + "'s " : ''}${eventTitle}${whenStr}. I'll remind you 2 hours before. 👍`
   } else {
     // Notify parent of decline
     if (parentPhone) {
       await sendSMS(
         parentPhone,
-        `${sessionData.village_name ?? 'Your village member'} can't cover ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' on ' + eventDate : ''}. You may want to arrange alternative coverage.`
+        `${sessionData.village_name ?? 'Your village member'} can't cover ${childName ? childName + "'s " : ''}${eventTitle}${eventDate ? ' ' + formatDate(eventDate, null) : ''}. You may want to arrange alternative coverage.`
       )
     }
 
@@ -1279,7 +1282,7 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
     if (existingMember) {
       const existing = existingMember as { id: string; name: string }
       await sendSMS(
-        user.id,
+        user.phone_number,
         `${existing.name} is already in your village — no need to add them again.`
       )
       return
@@ -1304,7 +1307,7 @@ async function extractAndSaveVillageMember(claudeText: string, user: User): Prom
 
       if ((memberCount ?? 0) >= limit) {
         await sendSMS(
-          user.id,
+          user.phone_number,
           `You've reached the member limit for your ${familyTier} plan. To add more village members, upgrade your plan at lifecovered.app.`
         )
         return
@@ -1442,7 +1445,7 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
     if (!villager?.phone_number) {
       // Notify parent that village member wasn't found
       await sendSMS(
-        user.id,
+        user.phone_number,
         `I don't have ${data.village_member_name}'s contact info on file. Text me their name and phone number to add them to your village first, then I can coordinate with them.`
       )
       return
@@ -1463,7 +1466,7 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
       phone_number: `coord_pending_${villager.phone_number}`,
       step: 'awaiting_coordination_reply',
       data: {
-        parent_phone: user.id,
+        parent_phone: user.phone_number,
         parent_name: user.name,
         village_name: villager.name,
         event_title: data.event_title,
@@ -1484,9 +1487,10 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
       })
     )
 
-    const timeStr = data.event_time ? ` at ${data.event_time}` : ''
+    const timeStr = data.event_time ? ` at ${formatTime(data.event_time)}` : ''
     const childStr = data.child_name ? ` for ${data.child_name}` : ''
-    const coordMessage = `Hey ${villager.name}! ${user.name} is asking if you can cover ${data.event_title}${childStr} on ${data.event_date}${timeStr}. Can you make it? Reply YES or NO.`
+    const dateStr = formatDate(data.event_date, user.timezone)
+    const coordMessage = `Hey ${villager.name}! ${user.name} is asking if you can cover ${data.event_title}${childStr} ${dateStr}${timeStr}. Can you make it? Reply YES or NO.`
 
     if (villagerHour >= 22 || villagerHour < 7) {
       // Queue for morning — store in dropzone_onboarding with pending_send flag
@@ -1496,14 +1500,14 @@ async function handleCoordinationRequest(claudeText: string, user: User): Promis
         data: {
           to: villager.phone_number,
           message: coordMessage,
-          parent_phone: user.id,
+          parent_phone: user.phone_number,
           parent_name: user.name,
           village_name: villager.name,
         },
       })
       // Notify parent that the request will go out in the morning
       await sendSMS(
-        user.id,
+        user.phone_number,
         `Got it — it's late so I'll reach out to ${villager.name} first thing in the morning to confirm. I'll let you know what they say! 🌙`
       )
     } else {
@@ -1533,6 +1537,57 @@ function generateEventDates(startDate: string, recurring: string | null): string
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Turns "16:00" into "4pm" / "16:30" into "4:30pm" — the way a person texts it.
+function formatTime(time: string | null): string {
+  if (!time) return ''
+  const parts = time.split(':')
+  const h = parseInt(parts[0] ?? '')
+  const m = parseInt(parts[1] ?? '0')
+  if (isNaN(h)) return time
+
+  const suffix = h >= 12 ? 'pm' : 'am'
+  let hour12 = h % 12
+  if (hour12 === 0) hour12 = 12
+
+  if (h === 12 && m === 0) return 'noon'
+  if (h === 0 && m === 0) return 'midnight'
+
+  return m === 0
+    ? `${hour12}${suffix}`
+    : `${hour12}:${String(m).padStart(2, '0')}${suffix}`
+}
+
+// Turns "2026-07-15" into "today" / "tomorrow" / "this Friday" / "Tue, Aug 4".
+// Anchored to the family's timezone so "today" means today for THEM.
+function formatDate(date: string | null, timezone: string | null): string {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return date ? `on ${date}` : ''
+
+  const tz = timezone ?? 'America/Chicago'
+  const todayISO = new Date().toLocaleDateString('en-CA', { timeZone: tz })
+
+  // Compare as plain calendar days — no clock math, no DST surprises.
+  const target = new Date(date + 'T12:00:00Z')
+  const today = new Date(todayISO + 'T12:00:00Z')
+  const dayDiff = Math.round((target.getTime() - today.getTime()) / 86400000)
+
+  if (dayDiff === 0) return 'today'
+  if (dayDiff === 1) return 'tomorrow'
+
+  const weekday = target.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })
+
+  // Within the coming week, people say "this Friday" — not the full date.
+  if (dayDiff > 1 && dayDiff <= 6) return `this ${weekday}`
+  if (dayDiff > 6 && dayDiff <= 13) return `next ${weekday}`
+
+  const short = target.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+  return `on ${short}`
+}
 
 function twimlResponse(message: string): NextResponse {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
