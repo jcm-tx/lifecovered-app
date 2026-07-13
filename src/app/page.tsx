@@ -1,30 +1,20 @@
-import { LandingPage } from "./_components/landing-page";
-
-const jsonLd = {
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  name: "TrustClaw",
-  description:
-    "Your 24/7 AI assistant with 1000+ integrations via OAuth and sandboxed execution.",
-  applicationCategory: "Productivity",
-  operatingSystem: "Web",
-  offers: {
-    "@type": "Offer",
-    price: "0",
-    priceCurrency: "USD",
-  },
-  creator: {
-    "@type": "Organization",
-    name: "Composio",
-    url: "https://composio.dev",
-  },
-};
-
-export default async function Page() {
+export default function Home() {
   return (
-    <>
-      <script type="application/ld+json">{JSON.stringify(jsonLd)}</script>
-      <LandingPage />
-    </>
-  );
+    <main style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', flexDirection: 'column',
+      fontFamily: 'system-ui, sans-serif', textAlign: 'center', padding: '2rem',
+    }}>
+      <h1 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>Life. Covered.</h1>
+      <p style={{ color: '#666', marginBottom: '1.5rem' }}>
+        Who&apos;s got the kids? You&apos;re covered.
+      </p>
+      <a href="/portal" style={{
+        padding: '0.75rem 1.5rem', background: '#111', color: '#fff',
+        borderRadius: '8px', textDecoration: 'none',
+      }}>
+        Go to your portal
+      </a>
+    </main>
+  )
 }
